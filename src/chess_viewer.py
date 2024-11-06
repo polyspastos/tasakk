@@ -1,3 +1,4 @@
+from .welcome_screen import WelcomeScreen
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk, ImageDraw
@@ -12,11 +13,65 @@ import xml.etree.ElementTree as ET
 from wand.image import Image as WandImage
 import numpy as np
 from scipy import ndimage
+import logging
 
-class ChessViewer:
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('chess_parser.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+class ChessViewer(tk.Frame):
     def __init__(self, root):
         print("Initializing ChessViewer...")
+        super().__init__(root)
         self.root = root
+        
+        # Theme colors with consistent dark mode
+        self.themes = {
+            'light': {
+                'bg': '#f0f0f0',
+                'fg': '#000000',
+                'light_squares': '#F0D9B5',
+                'dark_squares': '#B58863',
+                'text_bg': 'white',
+                'text_fg': 'black',
+                'button_bg': '#e0e0e0',
+                'button_fg': 'black',
+                'listbox_bg': 'white',
+                'listbox_fg': 'black',
+                'frame_bg': '#f0f0f0',
+                'menu_bg': '#f0f0f0',
+                'menu_fg': 'black'
+            },
+            'dark': {
+                'bg': '#1e1e1e',            # Darker background
+                'fg': '#ffffff',
+                'light_squares': '#769656',
+                'dark_squares': '#4a7039',
+                'text_bg': '#2d2d2d',       # Dark text areas
+                'text_fg': '#ffffff',
+                'button_bg': '#383838',     # Dark buttons
+                'button_fg': '#ffffff',
+                'listbox_bg': '#2d2d2d',    # Dark listbox
+                'listbox_fg': '#ffffff',
+                'frame_bg': '#1e1e1e',      # Dark frames
+                'menu_bg': '#383838',       # Dark menus
+                'menu_fg': '#ffffff'
+            }
+        }
+        
+        # Start in dark mode
+        self.current_theme = 'dark'
+        self.apply_theme()
+        
+        # Pack the frame
+        self.pack(fill=tk.BOTH, expand=True)
         
         # Initialize components
         self.db = None
@@ -28,6 +83,17 @@ class ChessViewer:
         self.games_list = []
         self.piece_images = {}
         self.square_size = 45
+        self.light_squares = '#F0D9B5'
+        self.dark_squares = '#B58863'
+        self.board = chess.Board()
+        self.position = self.get_initial_position()
+        
+        # Initialize engine-related variables
+        self.engine = None
+        self.engine_path = None
+        self.engine_depth = 20
+        self.analyzing = False
+        self.eval_var = tk.StringVar(value="Evaluation: 0.0")
         
         print("Creating menu...")
         self.create_menu()
@@ -41,6 +107,9 @@ class ChessViewer:
         print("Drawing board...")
         self.draw_board()
         
+        # Show welcome screen
+        self.after(100, lambda: WelcomeScreen(self))
+        
         # Bind keyboard events
         print("Binding events...")
         self.root.bind('<Left>', lambda e: self.prev_move())
@@ -51,13 +120,28 @@ class ChessViewer:
         
         print("ChessViewer initialization complete")
 
+    def get_initial_position(self):
+        """Return the initial chess position as a 2D array."""
+        position = [
+            ['bR', 'bN', 'bB', 'bQ', 'bK', 'bB', 'bN', 'bR'],
+            ['bP', 'bP', 'bP', 'bP', 'bP', 'bP', 'bP', 'bP'],
+            ['.', '.', '.', '.', '.', '.', '.', '.'],
+            ['.', '.', '.', '.', '.', '.', '.', '.'],
+            ['.', '.', '.', '.', '.', '.', '.', '.'],
+            ['.', '.', '.', '.', '.', '.', '.', '.'],
+            ['wP', 'wP', 'wP', 'wP', 'wP', 'wP', 'wP', 'wP'],
+            ['wR', 'wN', 'wB', 'wQ', 'wK', 'wB', 'wN', 'wR']
+        ]
+        return position
+
     def create_menu(self):
-        menubar = tk.Menu(self.root)
-        self.root.config(menu=menubar)
+        """Create the menu bar."""
+        self.menubar = tk.Menu(self.root)
+        self.root.config(menu=self.menubar)
         
         # File menu
-        file_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="File", menu=file_menu)
+        file_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="File", menu=file_menu)
         file_menu.add_command(label="Open PGN", command=self.open_pgn)
         file_menu.add_command(label="Open Database", command=self.open_database)
         file_menu.add_command(label="Save to Database", command=self.save_to_database)
@@ -65,9 +149,112 @@ class ChessViewer:
         file_menu.add_command(label="Exit", command=self.root.quit)
         
         # View menu
-        view_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="View", menu=view_menu)
+        view_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="View", menu=view_menu)
         view_menu.add_command(label="Flip Board", command=self.flip_board)
+        view_menu.add_command(label="Toggle Dark Mode", command=self.toggle_theme)
+
+    def toggle_theme(self):
+        """Toggle between light and dark themes."""
+        self.current_theme = 'dark' if self.current_theme == 'light' else 'light'
+        self.apply_theme()
+
+    def apply_theme(self):
+        """Apply the current theme to all widgets."""
+        theme = self.themes[self.current_theme]
+        
+        # Configure root window and main frame
+        self.root.configure(bg=theme['bg'])
+        self.configure(bg=theme['bg'])
+        
+        # Configure all frames
+        for widget in self.winfo_children():
+            if isinstance(widget, (ttk.Frame, tk.Frame, ttk.LabelFrame)):
+                widget.configure(bg=theme['frame_bg'])
+                # Configure children of frames
+                for child in widget.winfo_children():
+                    if isinstance(child, (tk.Text, tk.Entry)):
+                        child.configure(
+                            bg=theme['text_bg'],
+                            fg=theme['text_fg'],
+                            insertbackground=theme['text_fg'],
+                            selectbackground=theme['button_bg'],
+                            selectforeground=theme['button_fg']
+                        )
+                    elif isinstance(child, tk.Listbox):
+                        child.configure(
+                            bg=theme['listbox_bg'],
+                            fg=theme['listbox_fg'],
+                            selectbackground=theme['button_bg'],
+                            selectforeground=theme['button_fg']
+                        )
+                    elif isinstance(child, (ttk.Button, tk.Button)):
+                        if isinstance(child, tk.Button):
+                            child.configure(
+                                bg=theme['button_bg'],
+                                fg=theme['button_fg'],
+                                activebackground=theme['button_bg'],
+                                activeforeground=theme['button_fg']
+                            )
+                    elif isinstance(child, (ttk.Label, tk.Label)):
+                        child.configure(
+                            bg=theme['frame_bg'],
+                            fg=theme['fg']
+                        )
+        
+        # Configure specific widgets
+        if hasattr(self, 'info_text'):
+            self.info_text.configure(
+                bg=theme['text_bg'],
+                fg=theme['text_fg'],
+                insertbackground=theme['text_fg'],
+                selectbackground=theme['button_bg'],
+                selectforeground=theme['button_fg']
+            )
+        
+        if hasattr(self, 'moves_text'):
+            self.moves_text.configure(
+                bg=theme['text_bg'],
+                fg=theme['text_fg'],
+                insertbackground=theme['text_fg'],
+                selectbackground=theme['button_bg'],
+                selectforeground=theme['button_fg']
+            )
+        
+        if hasattr(self, 'game_listbox'):
+            self.game_listbox.configure(
+                bg=theme['listbox_bg'],
+                fg=theme['listbox_fg'],
+                selectbackground=theme['button_bg'],
+                selectforeground=theme['button_fg']
+            )
+        
+        # Configure menu if it exists
+        if hasattr(self, 'menubar'):
+            self._configure_menu(self.menubar, theme)
+        
+        # Update board colors
+        self.light_squares = theme['light_squares']
+        self.dark_squares = theme['dark_squares']
+        
+        # Redraw the board if it exists
+        if hasattr(self, 'canvas'):
+            self.canvas.configure(bg=theme['bg'])
+            self.update_pieces()
+
+    def _configure_menu(self, menu, theme):
+        """Configure menu colors recursively."""
+        menu.configure(
+            bg=theme['menu_bg'],
+            fg=theme['menu_fg'],
+            activebackground=theme['button_bg'],
+            activeforeground=theme['button_fg']
+        )
+        
+        # Configure all submenus
+        for item in menu.winfo_children():
+            if isinstance(item, tk.Menu):
+                self._configure_menu(item, theme)
 
     def setup_gui(self):
         # Main container with paned window
@@ -108,13 +295,46 @@ class ChessViewer:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
     def setup_right_panel(self):
-        print("Setting up right panel...")
+        """Set up the right panel with consistent dark theme."""
+        theme = self.themes[self.current_theme]
+        
         self.right_frame = ttk.Frame(self.main_paned)
         self.main_paned.add(self.right_frame, weight=2)
+        
+        # Game info display
+        self.info_frame = ttk.LabelFrame(self.right_frame, text="Game Info")
+        self.info_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Add scrollbar to info text
+        info_scroll = ttk.Scrollbar(self.info_frame)
+        info_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.info_text = tk.Text(
+            self.info_frame,
+            height=6,
+            wrap=tk.WORD,
+            yscrollcommand=info_scroll.set,
+            bg=theme['text_bg'],
+            fg=theme['text_fg'],
+            insertbackground=theme['text_fg']
+        )
+        self.info_text.pack(fill=tk.X, padx=5, pady=5)
+        info_scroll.config(command=self.info_text.yview)
         
         # Board canvas
         self.canvas = tk.Canvas(self.right_frame, width=400, height=400, bg='white')
         self.canvas.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Evaluation display
+        eval_frame = ttk.Frame(self.right_frame)
+        eval_frame.pack(fill=tk.X, padx=5)
+        
+        eval_label = ttk.Label(eval_frame, textvariable=self.eval_var)
+        eval_label.pack(side=tk.LEFT, padx=5)
+        
+        analyze_btn = ttk.Button(eval_frame, text="Analyze Position", 
+                               command=self.toggle_analysis)
+        analyze_btn.pack(side=tk.RIGHT, padx=5)
         
         # Controls frame
         self.controls = ttk.Frame(self.right_frame)
@@ -161,7 +381,8 @@ class ChessViewer:
             with WandImage(filename='res/chess_pieces_sprite.svg') as sprite:
                 # Process each piece
                 for piece_key, (x, y) in piece_positions.items():
-                    print(f"Creating piece {piece_key}...")
+                    # print(f"Creating piece {piece_key}...")
+                    # logger.info(f"Creating piece {piece_key}...")
                     
                     # Clone the sprite to avoid modifying the original
                     with sprite.clone() as piece:
@@ -255,7 +476,8 @@ class ChessViewer:
                     # Create PhotoImage
                     self.piece_images[piece_key] = ImageTk.PhotoImage(final_img)
                     
-                    print(f"Created piece {piece_key}")
+                    # print(f"Created piece {piece_key}")
+                    # logger.info(f"Created piece {piece_key}")
                 
         except Exception as e:
             print(f"Error creating pieces: {e}")
@@ -265,124 +487,79 @@ class ChessViewer:
         print("Finished create_default_pieces")
 
     def draw_board(self):
-        self.canvas.delete("all")
+        """Draw the chess board with current position."""
+        self.create_squares()
+        self.draw_position()
+
+    def start_play_mode(self, engine_path, engine_depth):
+        """Initialize play mode."""
+        print(f"Starting play mode with engine depth {engine_depth}")
+        # TODO: Implement play mode setup
+        pass
+
+    def start_view_mode(self, pgn_path, engine_path, engine_depth):
+        """Initialize view mode with a PGN file."""
+        print(f"Starting view mode with file {pgn_path}")
+        self.engine_path = engine_path
+        self.engine_depth = engine_depth
+        self.open_pgn(pgn_path)
+
+    def create_squares(self):
+        # Clear existing squares
+        self.canvas.delete("square")
         
-        width = self.canvas.winfo_width()
-        height = self.canvas.winfo_height()
-        self.square_size = min(width, height) // 8
-        
-        x_offset = (width - self.square_size * 8) // 2
-        y_offset = (height - self.square_size * 8) // 2
-        
-        # Draw squares
+        # Create new squares
         for row in range(8):
             for col in range(8):
-                x1 = x_offset + col * self.square_size
-                y1 = y_offset + row * self.square_size
+                x1 = col * self.square_size
+                y1 = row * self.square_size
                 x2 = x1 + self.square_size
                 y2 = y1 + self.square_size
                 
-                color = "#DDB88C" if (row + col) % 2 == 0 else "#A66D4F"
-                self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="")
+                # Determine square color
+                color = self.light_squares if (row + col) % 2 == 0 else self.dark_squares
                 
-                # Add coordinates
-                if col == 0:
-                    self.canvas.create_text(
-                        x1 - 10, y1 + self.square_size/2,
-                        text=str(8-row), fill="black"
-                    )
-                if row == 7:
-                    self.canvas.create_text(
-                        x1 + self.square_size/2, y2 + 10,
-                        text=chr(97 + col), fill="black"
-                    )
+                # Create square
+                self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, tags="square")
 
-        self.update_pieces()
-
-    def update_pieces(self):
-        if not hasattr(self, 'canvas'):
-            return
-            
-        board = chess.Board() if not self.current_game else self.current_game.board()
-        
-        if self.current_game:
-            moves = list(self.current_game.mainline_moves())
-            for move in moves[:self.current_move_index]:
-                board.push(move)
-
+    def draw_position(self):
+        # Clear existing pieces
         self.canvas.delete("piece")
         
-        width = self.canvas.winfo_width()
-        height = self.canvas.winfo_height()
-        x_offset = (width - self.square_size * 8) // 2
-        y_offset = (height - self.square_size * 8) // 2
+        # Draw pieces in their current positions
+        for row in range(8):
+            for col in range(8):
+                piece = self.position[row][col]
+                if piece != '.':
+                    x = col * self.square_size
+                    y = row * self.square_size
+                    self.canvas.create_image(x, y, image=self.piece_images[piece], 
+                                           anchor="nw", tags="piece")
+
+    def open_pgn(self, file_path=None):
+        """Open and load a PGN file."""
+        # If no file path provided, show file dialog
+        if file_path is None:
+            file_path = filedialog.askopenfilename(
+                filetypes=[("PGN files", "*.pgn"), ("All files", "*.*")]
+            )
         
-        for square in chess.SQUARES:
-            piece = board.piece_at(square)
-            if piece:
-                col = chess.square_file(square)
-                row = 7 - chess.square_rank(square)
-                
-                x = x_offset + col * self.square_size + self.square_size // 2
-                y = y_offset + row * self.square_size + self.square_size // 2
-                
-                color = 'w' if piece.color == chess.WHITE else 'b'
-                piece_key = color + piece.symbol().upper()
-                
-                self.canvas.create_image(x, y, image=self.piece_images[piece_key], tags="piece")
-
-        self.update_moves_display()
-
-    def update_moves_display(self):
-        """Update the moves text display."""
-        try:
-            if hasattr(self, 'moves_text'):
-                self.moves_text.delete('1.0', tk.END)
-                if self.current_game:
-                    moves = list(self.current_game.mainline_moves())
-                    board = chess.Board()
-                    move_text = []
-                    
-                    for i, move in enumerate(moves[:self.current_move_index]):
-                        if i % 2 == 0:
-                            move_text.append(f"{i//2 + 1}.")
-                        move_text.append(board.san(move))
-                        board.push(move)
-                    
-                    self.moves_text.insert('1.0', ' '.join(move_text))
-        except Exception as e:
-            print(f"Error updating moves display: {e}")
-
-    def update_game_info(self):
-        if not self.current_game:
-            self.info_text.delete('1.0', tk.END)
-            return
-            
-        info = []
-        headers = self.current_game.headers
-        info.append(f"Event: {headers.get('Event', 'Unknown')}")
-        info.append(f"Site: {headers.get('Site', 'Unknown')}")
-        info.append(f"Date: {headers.get('Date', '?')}")
-        info.append(f"White: {headers.get('White', '?')} ({headers.get('WhiteElo', '?')})")
-        info.append(f"Black: {headers.get('Black', '?')} ({headers.get('BlackElo', '?')})")
-        info.append(f"Result: {headers.get('Result', '?')}")
-        
-        self.info_text.delete('1.0', tk.END)
-        self.info_text.insert('1.0', '\n'.join(info))
-
-    def open_pgn(self):
-        file_path = filedialog.askopenfilename(
-            filetypes=[("PGN files", "*.pgn"), ("All files", "*.*")]
-        )
         if not file_path:
             return
 
         try:
+            # Make sure GUI elements exist before using them
+            if not hasattr(self, 'game_listbox') or not hasattr(self, 'info_text'):
+                raise Exception("GUI elements not initialized")
+                
             self.games_list = self.parser.parse_file(file_path)
+            if not self.games_list:
+                raise Exception("No valid games found in file")
+                
             self.game_listbox.delete(0, tk.END)
             
             for game in self.games_list:
-                game_str = format_game_display(game)
+                game_str = self.format_game_display(game)
                 self.game_listbox.insert(tk.END, game_str)
             
             if self.parser.errors:
@@ -391,10 +568,39 @@ class ChessViewer:
                     f"Some games could not be parsed:\n\n" + "\n".join(self.parser.errors[:5])
                 )
             
+            # Select and load the first game if available
+            if self.games_list:
+                self.game_listbox.selection_set(0)
+                self.current_game = self.games_list[0]
+                self.current_move_index = 0
+                self.update_game_info()
+                self.update_pieces()
+            
             self.game_listbox.bind('<<ListboxSelect>>', self.on_select_game)
                 
         except Exception as e:
+            logger.error(f"Error loading PGN file: {e}")
             messagebox.showerror("Error", f"Error loading PGN file: {str(e)}")
+
+    def format_game_display(self, game):
+        """Format a game for display in the listbox."""
+        try:
+            white = game.get('White', game.get('white', 'Unknown'))
+            black = game.get('Black', game.get('black', 'Unknown'))
+            result = game.get('Result', game.get('result', '*'))
+            event = game.get('Event', game.get('event', ''))
+            date = game.get('Date', game.get('date', ''))
+            
+            display = f"{white} - {black} ({result})"
+            if event:
+                display += f" | {event}"
+            if date:
+                display += f" {date}"
+                
+            return display
+        except Exception as e:
+            logger.error(f"Error formatting game display: {e}")
+            return "Error formatting game"
 
     def open_database(self):
         db_path = filedialog.askopenfilename(
@@ -414,7 +620,7 @@ class ChessViewer:
             self.game_listbox.delete(0, tk.END)
             
             for game in games:
-                game_str = format_game_display(game)
+                game_str = self.format_game_display(game)
                 self.game_listbox.insert(tk.END, game_str)
                 self.games_list.append(game)
                 
@@ -466,7 +672,7 @@ class ChessViewer:
             self.game_listbox.delete(0, tk.END)
             
             for game in games:
-                game_str = format_game_display(game)
+                game_str = self.format_game_display(game)
                 self.game_listbox.insert(tk.END, game_str)
                 self.games_list.append(game)
                 
@@ -494,12 +700,39 @@ class ChessViewer:
             self.current_move_index = len(moves)
             self.update_pieces()
 
-    def next_move(self):
-        if self.current_game:
-            moves = list(self.current_game.mainline_moves())
+    def next_move(self, event=None):
+        """Go to the next move in the current game."""
+        if not self.current_game:
+            return
+        
+        try:
+            # Get moves list
+            if isinstance(self.current_game, dict):
+                pgn_str = self.current_game.get('pgn', '')
+                if not pgn_str:
+                    logger.warning("No moves found in game")
+                    return
+                    
+                # Create a StringIO object with the PGN text
+                pgn_io = io.StringIO(pgn_str)
+                game = chess.pgn.read_game(pgn_io)
+                
+                if game:
+                    moves = list(game.mainline_moves())
+                else:
+                    logger.warning("Could not parse moves for navigation")
+                    return
+            else:
+                moves = list(self.current_game.mainline_moves())
+            
+            # Check if we can move forward
             if self.current_move_index < len(moves):
                 self.current_move_index += 1
                 self.update_pieces()
+                self.update_moves_display()
+            
+        except Exception as e:
+            logger.error(f"Error applying moves: {e}")
 
     def prev_move(self):
         if self.current_game and self.current_move_index > 0:
@@ -545,37 +778,226 @@ class ChessViewer:
         # Redraw the current position
         self.draw_position()
 
-    def create_squares(self):
-        # Clear existing squares
-        self.canvas.delete("square")
-        
-        # Create new squares
-        for row in range(8):
-            for col in range(8):
-                x1 = col * self.square_size
-                y1 = row * self.square_size
-                x2 = x1 + self.square_size
-                y2 = y1 + self.square_size
-                
-                # Determine square color
-                color = self.light_squares if (row + col) % 2 == 0 else self.dark_squares
-                
-                # Create square
-                self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, tags="square")
+    def update_pieces(self):
+        """Update the chess pieces on the board."""
+        try:
+            # Create a new board
+            board = chess.Board()
+            
+            # Apply moves up to current index
+            if self.current_game:
+                if isinstance(self.current_game, dict):
+                    pgn_str = self.current_game.get('pgn', '')
+                    if pgn_str:
+                        game = chess.pgn.read_game(io.StringIO(pgn_str))
+                        if game:
+                            moves = list(game.mainline_moves())
+                            for move in moves[:self.current_move_index]:
+                                board.push(move)
+            else:
+                moves = list(self.current_game.mainline_moves())
+                for move in moves[:self.current_move_index]:
+                    board.push(move)
 
-    def draw_position(self):
-        # Clear existing pieces
-        self.canvas.delete("piece")
+            self.canvas.delete("piece")
+            
+            # Update board display
+            for square in chess.SQUARES:
+                piece = board.piece_at(square)
+                if piece:
+                    col = chess.square_file(square)
+                    row = 7 - chess.square_rank(square)
+                    
+                    x = col * self.square_size + self.square_size // 2
+                    y = row * self.square_size + self.square_size // 2
+                    
+                    color = 'w' if piece.color == chess.WHITE else 'b'
+                    piece_key = color + piece.symbol().upper()
+                    
+                    self.canvas.create_image(x, y, image=self.piece_images[piece_key], tags="piece")
+
+            # Update moves display
+            self.update_moves_display()
+            
+            # Update evaluation if analyzing
+            if self.analyzing:
+                self.analyze_position()
+            
+        except Exception as e:
+            logger.error(f"Error updating pieces: {e}")
+
+    def update_moves_display(self):
+        """Update the moves text display."""
+        try:
+            if hasattr(self, 'moves_text'):
+                self.moves_text.delete('1.0', tk.END)
+                if self.current_game:
+                    if isinstance(self.current_game, dict):
+                        # If it's a dictionary, get moves from PGN
+                        game = chess.pgn.read_game(io.StringIO(self.current_game.get('pgn', '')))
+                        if game:
+                            moves = list(game.mainline_moves())
+                    else:
+                        # If it's a chess.pgn.Game object
+                        moves = list(self.current_game.mainline_moves())
+                    
+                    board = chess.Board()
+                    move_text = []
+                    
+                    for i, move in enumerate(moves[:self.current_move_index]):
+                        if i % 2 == 0:
+                            move_text.append(f"{i//2 + 1}.")
+                        move_text.append(board.san(move))
+                        board.push(move)
+                    
+                    self.moves_text.insert('1.0', ' '.join(move_text))
+        except Exception as e:
+            print(f"Error updating moves display: {e}")
+
+    def update_game_info(self):
+        """Update the game information display."""
+        if not self.current_game:
+            self.info_text.delete('1.0', tk.END)
+            return
         
-        # Draw pieces in their current positions
-        for row in range(8):
-            for col in range(8):
-                piece = self.position[row][col]
-                if piece != '.':
-                    x = col * self.square_size
-                    y = row * self.square_size
-                    self.canvas.create_image(x, y, image=self.piece_images[piece], 
-                                           anchor="nw", tags="piece")
+        try:
+            info = []
+            # Handle both dictionary and chess.pgn.Game objects
+            if isinstance(self.current_game, dict):
+                game = self.current_game
+                info.extend([
+                    f"Event: {game.get('Event', game.get('event', 'Unknown'))}",
+                    f"Site: {game.get('Site', game.get('site', 'Unknown'))}",
+                    f"Date: {game.get('Date', game.get('date', '?'))}",
+                    f"Round: {game.get('Round', game.get('round', '?'))}",
+                    f"White: {game.get('White', game.get('white', '?'))}",
+                    f"Black: {game.get('Black', game.get('black', '?'))}",
+                    f"Result: {game.get('Result', game.get('result', '*'))}"
+                ])
+            else:
+                headers = self.current_game.headers
+                info.extend([
+                    f"Event: {headers.get('Event', 'Unknown')}",
+                    f"Site: {headers.get('Site', 'Unknown')}",
+                    f"Date: {headers.get('Date', '?')}",
+                    f"Round: {headers.get('Round', '?')}",
+                    f"White: {headers.get('White', '?')}",
+                    f"Black: {headers.get('Black', '?')}",
+                    f"Result: {headers.get('Result', '*')}"
+                ])
+            
+            self.info_text.delete('1.0', tk.END)
+            self.info_text.insert('1.0', '\n'.join(info))
+        except Exception as e:
+            logger.error(f"Error updating game info: {e}")
+            self.info_text.delete('1.0', tk.END)
+            self.info_text.insert('1.0', "Error displaying game information")
+
+    def initialize_engine(self):
+        """Initialize the Stockfish engine."""
+        if self.engine is None and self.engine_path and os.path.exists(self.engine_path):
+            try:
+                import chess.engine
+                self.engine = chess.engine.SimpleEngine.popen_uci(self.engine_path)
+                self.engine.configure({"Threads": 2, "Hash": 128})
+            except Exception as e:
+                messagebox.showerror("Engine Error", f"Failed to start engine: {str(e)}")
+                self.engine = None
+
+    def toggle_analysis(self):
+        """Toggle engine analysis on/off."""
+        if self.analyzing:
+            self.analyzing = False
+            self.eval_var.set("Evaluation: 0.0")
+            return
+        
+        if not self.engine:
+            self.initialize_engine()
+            if not self.engine:
+                return
+        
+        self.analyzing = True
+        self.analyze_position()
+
+    def analyze_position(self):
+        """Analyze the current position."""
+        if not self.analyzing or not self.engine:
+            return
+        
+        try:
+            # Get current position
+            board = chess.Board()
+            if self.current_game:
+                moves = list(self.current_game.mainline_moves())
+                for move in moves[:self.current_move_index]:
+                    board.push(move)
+            
+            # Get engine evaluation
+            info = self.engine.analyse(board, chess.engine.Limit(depth=self.engine_depth))
+            score = info["score"].white()
+            
+            # Convert score to string
+            if score.is_mate():
+                eval_str = f"Mate in {score.mate()}"
+            else:
+                eval_str = f"{score.score() / 100:.2f}"
+            
+            self.eval_var.set(f"Evaluation: {eval_str}")
+            
+        except Exception as e:
+            print(f"Analysis error: {e}")
+            self.analyzing = False
+
+    def __del__(self):
+        """Cleanup when object is destroyed."""
+        if self.engine:
+            self.engine.quit()
+
+    def parse_pgn_moves(self, game_dict):
+        """Convert PGN moves string into a chess.pgn.Game object."""
+        try:
+            # Create a new game
+            game = chess.pgn.Game()
+            
+            # Set headers
+            for key, value in game_dict.items():
+                if key != 'moves':
+                    game.headers[key] = value
+            
+            # Clean up moves string
+            moves_str = game_dict.get('moves', '').strip()
+            if not moves_str:
+                logger.warning("No moves found in game")
+                return None
+                
+            # Create a board for parsing moves
+            board = chess.Board()
+            node = game
+            
+            # Clean up moves string and split into tokens
+            moves_str = moves_str.replace('  ', ' ')
+            tokens = moves_str.split()
+            
+            current_move = []
+            for token in tokens:
+                # Skip move numbers and result
+                if '.' in token or token in ['1-0', '0-1', '1/2-1/2', '*']:
+                    continue
+                
+                try:
+                    # Parse move in standard algebraic notation
+                    move = board.parse_san(token)
+                    node = node.add_variation(move)
+                    board.push(move)
+                except Exception as e:
+                    logger.error(f"Error parsing move {token}: {e}")
+                    continue
+            
+            return game
+            
+        except Exception as e:
+            logger.error(f"Error converting moves to game object: {e}")
+            return None
 
 if __name__ == "__main__":
     root = tk.Tk()
