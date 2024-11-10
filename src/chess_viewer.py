@@ -93,7 +93,14 @@ class ChessViewer(tk.Frame):
         self.engine_path = None
         self.engine_depth = 20
         self.analyzing = False
-        self.eval_var = tk.StringVar(value="Evaluation: 0.0")
+        self.num_lines = 1  # Number of lines to show
+        self.max_lines = 5  # Maximum number of lines
+        self.eval_var = tk.StringVar(value="")
+        self.analysis_lines = []  # Store multiple analysis lines
+        
+        # Initialize board offsets
+        self.board_x_offset = 0  # Will be updated in resize_board
+        self.board_y_offset = 0  # Will be updated in resize_board
         
         print("Creating menu...")
         self.create_menu()
@@ -110,15 +117,16 @@ class ChessViewer(tk.Frame):
         # Show welcome screen
         self.after(100, lambda: WelcomeScreen(self))
         
-        # Bind keyboard events
-        print("Binding events...")
-        self.root.bind('<Left>', lambda e: self.prev_move())
-        self.root.bind('<Right>', lambda e: self.next_move())
-        self.root.bind('<Up>', lambda e: self.first_move())
-        self.root.bind('<Down>', lambda e: self.last_move())
-        self.root.bind('<Configure>', self.on_resize)
-        
+        # Bind events...
         print("ChessViewer initialization complete")
+        
+        # Remove any existing bindings for arrow keys
+        for key in ['<Left>', '<Right>', '<Up>', '<Down>']:
+            self.root.unbind_all(key)
+        
+        # Add our specific bindings with high priority
+        self.root.bind_all('<Left>', lambda e: self.prev_ply(e), add="+")
+        self.root.bind_all('<Right>', lambda e: self.next_ply(e), add="+")
 
     def get_initial_position(self):
         """Return the initial chess position as a 2D array."""
@@ -257,106 +265,75 @@ class ChessViewer(tk.Frame):
                 self._configure_menu(item, theme)
 
     def setup_gui(self):
-        # Main container with paned window
-        print("Creating main paned window...")
-        self.main_paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+        """Set up the main GUI layout."""
+        # Main horizontal paned window
+        self.main_paned = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         self.main_paned.pack(fill=tk.BOTH, expand=True)
         
-        # Left panel setup
-        print("Setting up left panel...")
-        self.setup_left_panel()
-        
-        # Right panel setup
-        print("Setting up right panel...")
-        self.setup_right_panel()
-
-    def setup_left_panel(self):
+        # Left panel for games list
         self.left_frame = ttk.Frame(self.main_paned)
         self.main_paned.add(self.left_frame, weight=1)
         
-        # Search frame
-        self.search_frame = ttk.Frame(self.left_frame)
-        self.search_frame.pack(fill=tk.X, padx=5, pady=5)
-        self.search_var = tk.StringVar()
-        self.search_entry = ttk.Entry(self.search_frame, textvariable=self.search_var)
-        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(self.search_frame, text="Search", command=self.search_games).pack(side=tk.RIGHT)
-
         # Games list
         self.games_frame = ttk.LabelFrame(self.left_frame, text="Games")
         self.games_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        self.game_listbox = tk.Listbox(self.games_frame, selectmode=tk.EXTENDED)
-        scrollbar = ttk.Scrollbar(self.games_frame, orient=tk.VERTICAL)
-        self.game_listbox.config(yscrollcommand=scrollbar.set)
-        scrollbar.config(command=self.game_listbox.yview)
+        # Game listbox with scrollbar
+        games_scroll = ttk.Scrollbar(self.games_frame)
+        games_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         
-        self.game_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-    def setup_right_panel(self):
-        """Set up the right panel with consistent dark theme."""
-        theme = self.themes[self.current_theme]
+        self.game_listbox = tk.Listbox(
+            self.games_frame,
+            yscrollcommand=games_scroll.set,
+            bg=self.themes[self.current_theme]['listbox_bg'],
+            fg=self.themes[self.current_theme]['listbox_fg'],
+            selectmode=tk.SINGLE
+        )
+        self.game_listbox.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        games_scroll.config(command=self.game_listbox.yview)
         
+        # Center panel for board and controls
+        self.center_frame = ttk.Frame(self.main_paned)
+        self.main_paned.add(self.center_frame, weight=3)
+        
+        # Board container frame
+        self.board_container = ttk.Frame(self.center_frame)
+        self.board_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Make board container resizable
+        self.board_container.grid_rowconfigure(0, weight=1)
+        self.board_container.grid_columnconfigure(0, weight=1)
+        
+        # Create canvas for the chess board
+        self.canvas = tk.Canvas(
+            self.board_container,
+            bg=self.themes[self.current_theme]['bg'],
+            highlightthickness=0
+        )
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        
+        # Controls frame below the board
+        self.controls_frame = ttk.Frame(self.center_frame)
+        self.controls_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Navigation buttons
+        ttk.Button(self.controls_frame, text="Prev Game", command=self.prev_game).pack(side=tk.LEFT, padx=2)
+        ttk.Button(self.controls_frame, text="<<", command=self.first_move).pack(side=tk.LEFT, padx=2)
+        ttk.Button(self.controls_frame, text="<", command=self.prev_move).pack(side=tk.LEFT, padx=2)
+        ttk.Button(self.controls_frame, text=">", command=self.next_move).pack(side=tk.LEFT, padx=2)
+        ttk.Button(self.controls_frame, text=">>", command=self.last_move).pack(side=tk.LEFT, padx=2)
+        ttk.Button(self.controls_frame, text="Next Game", command=self.next_game).pack(side=tk.LEFT, padx=2)
+        
+        # Right panel
         self.right_frame = ttk.Frame(self.main_paned)
         self.main_paned.add(self.right_frame, weight=2)
         
-        # Game info display
-        self.info_frame = ttk.LabelFrame(self.right_frame, text="Game Info")
-        self.info_frame.pack(fill=tk.X, padx=5, pady=5)
+        # Set up right panel contents
+        self.setup_right_panel()
         
-        # Add scrollbar to info text
-        info_scroll = ttk.Scrollbar(self.info_frame)
-        info_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        self.info_text = tk.Text(
-            self.info_frame,
-            height=6,
-            wrap=tk.WORD,
-            yscrollcommand=info_scroll.set,
-            bg=theme['text_bg'],
-            fg=theme['text_fg'],
-            insertbackground=theme['text_fg']
-        )
-        self.info_text.pack(fill=tk.X, padx=5, pady=5)
-        info_scroll.config(command=self.info_text.yview)
-        
-        # Board canvas
-        self.canvas = tk.Canvas(self.right_frame, width=400, height=400, bg='white')
-        self.canvas.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Evaluation display
-        eval_frame = ttk.Frame(self.right_frame)
-        eval_frame.pack(fill=tk.X, padx=5)
-        
-        eval_label = ttk.Label(eval_frame, textvariable=self.eval_var)
-        eval_label.pack(side=tk.LEFT, padx=5)
-        
-        analyze_btn = ttk.Button(eval_frame, text="Analyze Position", 
-                               command=self.toggle_analysis)
-        analyze_btn.pack(side=tk.RIGHT, padx=5)
-        
-        # Controls frame
-        self.controls = ttk.Frame(self.right_frame)
-        self.controls.pack(fill=tk.X, padx=5, pady=5)
-        
-        ttk.Button(self.controls, text="<<", command=self.first_move).pack(side=tk.LEFT, padx=2)
-        ttk.Button(self.controls, text="<", command=self.prev_move).pack(side=tk.LEFT, padx=2)
-        ttk.Button(self.controls, text=">", command=self.next_move).pack(side=tk.LEFT, padx=2)
-        ttk.Button(self.controls, text=">>", command=self.last_move).pack(side=tk.LEFT, padx=2)
-        
-        # Moves display
-        self.moves_frame = ttk.LabelFrame(self.right_frame, text="Moves")
-        self.moves_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        # Add scrollbar to moves text
-        moves_scroll = ttk.Scrollbar(self.moves_frame)
-        moves_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        self.moves_text = tk.Text(self.moves_frame, height=4, wrap=tk.WORD, 
-                                 yscrollcommand=moves_scroll.set)
-        self.moves_text.pack(fill=tk.X, padx=5, pady=5)
-        moves_scroll.config(command=self.moves_text.yview)
+        # Bind resize events
+        self.canvas.bind('<Configure>', self.resize_board)
+        self.game_listbox.bind('<<ListboxSelect>>', self.on_select_game)
 
     def create_default_pieces(self):
         print("Starting create_default_pieces...")
@@ -487,9 +464,28 @@ class ChessViewer(tk.Frame):
         print("Finished create_default_pieces")
 
     def draw_board(self):
-        """Draw the chess board with current position."""
-        self.create_squares()
-        self.draw_position()
+        """Draw the chess board."""
+        # Clear existing squares
+        self.canvas.delete("square")
+        
+        # Draw new squares
+        for row in range(8):
+            for col in range(8):
+                x1 = self.board_x_offset + (col * self.square_size)
+                y1 = self.board_y_offset + (row * self.square_size)
+                x2 = x1 + self.square_size
+                y2 = y1 + self.square_size
+                
+                # Determine square color
+                color = self.light_squares if (row + col) % 2 == 0 else self.dark_squares
+                
+                # Create square
+                self.canvas.create_rectangle(
+                    x1, y1, x2, y2,
+                    fill=color,
+                    outline="",
+                    tags="square"
+                )
 
     def start_play_mode(self, engine_path, engine_depth):
         """Initialize play mode."""
@@ -503,38 +499,6 @@ class ChessViewer(tk.Frame):
         self.engine_path = engine_path
         self.engine_depth = engine_depth
         self.open_pgn(pgn_path)
-
-    def create_squares(self):
-        # Clear existing squares
-        self.canvas.delete("square")
-        
-        # Create new squares
-        for row in range(8):
-            for col in range(8):
-                x1 = col * self.square_size
-                y1 = row * self.square_size
-                x2 = x1 + self.square_size
-                y2 = y1 + self.square_size
-                
-                # Determine square color
-                color = self.light_squares if (row + col) % 2 == 0 else self.dark_squares
-                
-                # Create square
-                self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, tags="square")
-
-    def draw_position(self):
-        # Clear existing pieces
-        self.canvas.delete("piece")
-        
-        # Draw pieces in their current positions
-        for row in range(8):
-            for col in range(8):
-                piece = self.position[row][col]
-                if piece != '.':
-                    x = col * self.square_size
-                    y = row * self.square_size
-                    self.canvas.create_image(x, y, image=self.piece_images[piece], 
-                                           anchor="nw", tags="piece")
 
     def open_pgn(self, file_path=None):
         """Open and load a PGN file."""
@@ -683,10 +647,15 @@ class ChessViewer(tk.Frame):
         # TODO: Implement board flipping
         pass
 
-    def on_resize(self, event):
+    def on_resize_window(self, event):
+        """Handle window resize without resetting position."""
+        # Only respond if it's a window resize, not a widget configure event
         if event.widget == self.root:
-            self.create_default_pieces()
-            self.draw_board()
+            # Adjust canvas size if needed
+            if hasattr(self, 'canvas'):
+                self.canvas.configure(width=event.width, height=event.height)
+                self.draw_board()  # Only redraw the board, don't reset position
+                self.update_pieces()  # Keep the current position
 
     # Navigation methods
     def first_move(self):
@@ -694,11 +663,27 @@ class ChessViewer(tk.Frame):
             self.current_move_index = 0
             self.update_pieces()
 
-    def last_move(self):
-        if self.current_game:
-            moves = list(self.current_game.mainline_moves())
-            self.current_move_index = len(moves)
+    def last_move(self, event=None):
+        """Go to the last move in the current game."""
+        if not self.current_game:
+            return
+            
+        try:
+            if isinstance(self.current_game, dict):
+                pgn_str = self.current_game.get('pgn', '')
+                if pgn_str:
+                    game = chess.pgn.read_game(io.StringIO(pgn_str))
+                    if game:
+                        moves = list(game.mainline_moves())
+                        self.current_move_index = len(moves)
+            else:
+                moves = list(self.current_game.mainline_moves())
+                self.current_move_index = len(moves)
+                
             self.update_pieces()
+            
+        except Exception as e:
+            logger.error(f"Error going to last move: {e}")
 
     def next_move(self, event=None):
         """Go to the next move in the current game."""
@@ -747,44 +732,45 @@ class ChessViewer(tk.Frame):
             self.update_game_info()
             self.update_pieces()
 
-    def resize_board(self, event=None):
-        # Get the new window size
-        width = self.winfo_width()
-        height = self.winfo_height()
-        
-        # Calculate the maximum possible board size that fits the window
-        # while maintaining the aspect ratio of 1:1
-        board_size = min(width, height)
-        
-        # Calculate the square size based on the board size
-        self.square_size = board_size // 8
-        
-        # Recalculate board size to ensure it's exactly 8 squares
-        board_size = self.square_size * 8
-        
-        # Center the board in the window
-        x_offset = (width - board_size) // 2
-        y_offset = (height - board_size) // 2
-        
-        # Update the canvas size and position
-        self.canvas.place(x=x_offset, y=y_offset, width=board_size, height=board_size)
-        
-        # Recreate the squares with new size
-        self.create_squares()
-        
-        # Recreate the pieces with new size
-        self.create_default_pieces()
-        
-        # Redraw the current position
-        self.draw_position()
+    def resize_board(self, event):
+        """Handle board resize while maintaining square aspect ratio."""
+        if event.widget == self.canvas:
+            # Get the container size
+            width = self.board_container.winfo_width()
+            height = self.board_container.winfo_height()
+            
+            # Calculate the maximum possible board size that fits while maintaining aspect ratio
+            board_size = min(width - 20, height - 20)  # Subtract padding
+            
+            # Calculate new square size
+            self.square_size = max(30, board_size // 8)  # Minimum square size of 30 pixels
+            
+            # Recalculate board size to ensure it's exactly 8 squares
+            board_size = self.square_size * 8
+            
+            # Center the board in the canvas
+            x_offset = (width - board_size) // 2
+            y_offset = (height - board_size) // 2
+            
+            # Store offsets for piece placement
+            self.board_x_offset = x_offset
+            self.board_y_offset = y_offset
+            
+            # Recreate piece images at new size
+            self.create_default_pieces()
+            
+            # Redraw everything
+            self.draw_board()
+            self.update_pieces()
 
     def update_pieces(self):
-        """Update the chess pieces on the board."""
+        """Update piece positions on the board."""
         try:
-            # Create a new board
-            board = chess.Board()
+            # Clear existing pieces
+            self.canvas.delete("piece")
             
-            # Apply moves up to current index
+            # Get current position from moves
+            board = chess.Board()
             if self.current_game:
                 if isinstance(self.current_game, dict):
                     pgn_str = self.current_game.get('pgn', '')
@@ -794,65 +780,109 @@ class ChessViewer(tk.Frame):
                             moves = list(game.mainline_moves())
                             for move in moves[:self.current_move_index]:
                                 board.push(move)
-            else:
-                moves = list(self.current_game.mainline_moves())
-                for move in moves[:self.current_move_index]:
-                    board.push(move)
-
-            self.canvas.delete("piece")
+                else:
+                    moves = list(self.current_game.mainline_moves())
+                    for move in moves[:self.current_move_index]:
+                        board.push(move)
             
-            # Update board display
+            # Convert board position to our format
+            position = [['.'] * 8 for _ in range(8)]
             for square in chess.SQUARES:
                 piece = board.piece_at(square)
                 if piece:
-                    col = chess.square_file(square)
-                    row = 7 - chess.square_rank(square)
-                    
-                    x = col * self.square_size + self.square_size // 2
-                    y = row * self.square_size + self.square_size // 2
-                    
-                    color = 'w' if piece.color == chess.WHITE else 'b'
-                    piece_key = color + piece.symbol().upper()
-                    
-                    self.canvas.create_image(x, y, image=self.piece_images[piece_key], tags="piece")
-
+                    rank = chess.square_rank(square)
+                    file = chess.square_file(square)
+                    color = 'w' if piece.color else 'b'
+                    piece_type = piece.symbol().upper()
+                    position[7-rank][file] = color + piece_type
+            
+            # Draw pieces in their current positions
+            for row in range(8):
+                for col in range(8):
+                    piece = position[row][col]
+                    if piece != '.':
+                        x = self.board_x_offset + (col * self.square_size) + (self.square_size // 2)
+                        y = self.board_y_offset + (row * self.square_size) + (self.square_size // 2)
+                        if piece in self.piece_images:
+                            self.canvas.create_image(
+                                x, y,
+                                image=self.piece_images[piece],
+                                tags="piece"
+                            )
+            
             # Update moves display
             self.update_moves_display()
-            
-            # Update evaluation if analyzing
-            if self.analyzing:
-                self.analyze_position()
             
         except Exception as e:
             logger.error(f"Error updating pieces: {e}")
 
     def update_moves_display(self):
-        """Update the moves text display."""
+        """Update the moves text display with clickable moves."""
         try:
             if hasattr(self, 'moves_text'):
-                self.moves_text.delete('1.0', tk.END)
                 if self.current_game:
+                    self.moves_text.delete('1.0', tk.END)
+                    
+                    # Configure tag for clickable moves
+                    self.moves_text.tag_configure("clickable", 
+                        foreground="lightblue",
+                        underline=True)
+                    
+                    # Get moves
                     if isinstance(self.current_game, dict):
-                        # If it's a dictionary, get moves from PGN
                         game = chess.pgn.read_game(io.StringIO(self.current_game.get('pgn', '')))
                         if game:
                             moves = list(game.mainline_moves())
                     else:
-                        # If it's a chess.pgn.Game object
                         moves = list(self.current_game.mainline_moves())
                     
                     board = chess.Board()
-                    move_text = []
                     
-                    for i, move in enumerate(moves[:self.current_move_index]):
+                    # Store move positions for click handling
+                    self.move_positions = {}  # Clear previous positions
+                    
+                    for i, move in enumerate(moves):
+                        # Add move number
                         if i % 2 == 0:
-                            move_text.append(f"{i//2 + 1}.")
-                        move_text.append(board.san(move))
+                            move_num = f"{i//2 + 1}. "
+                            self.moves_text.insert(tk.END, move_num)
+                        
+                        # Add move
+                        move_san = board.san(move)
+                        start_index = self.moves_text.index("end-1c")
+                        self.moves_text.insert(tk.END, move_san + " ", "clickable")
+                        end_index = self.moves_text.index("end-1c")
+                        
+                        # Store the move position and index
+                        self.move_positions[f"{start_index}:{end_index}"] = i
+                        
                         board.push(move)
                     
-                    self.moves_text.insert('1.0', ' '.join(move_text))
+                    # Bind click event
+                    self.moves_text.tag_bind("clickable", "<Button-1>", self.on_move_click)
+                    self.moves_text.config(cursor="hand2")
+                    
         except Exception as e:
-            print(f"Error updating moves display: {e}")
+            logger.error(f"Error updating moves display: {e}")
+
+    def on_move_click(self, event):
+        """Handle click on a move in the moves display."""
+        try:
+            # Get click position
+            click_index = self.moves_text.index(f"@{event.x},{event.y}")
+            
+            # Find which move was clicked
+            for pos, move_index in self.move_positions.items():
+                start, end = pos.split(":")
+                if self.moves_text.compare(start, "<=", click_index) and \
+                   self.moves_text.compare(click_index, "<=", end):
+                    # Update position to this move
+                    self.current_move_index = move_index + 1  # Add 1 because move_index is 0-based
+                    self.update_pieces()
+                    break
+                    
+        except Exception as e:
+            logger.error(f"Error handling move click: {e}")
 
     def update_game_info(self):
         """Update the game information display."""
@@ -908,7 +938,8 @@ class ChessViewer(tk.Frame):
         """Toggle engine analysis on/off."""
         if self.analyzing:
             self.analyzing = False
-            self.eval_var.set("Evaluation: 0.0")
+            self.analyze_button.configure(text="Analyze Position")
+            self.analysis_text.delete('1.0', tk.END)
             return
         
         if not self.engine:
@@ -917,6 +948,7 @@ class ChessViewer(tk.Frame):
                 return
         
         self.analyzing = True
+        self.analyze_button.configure(text="Stop Engine")
         self.analyze_position()
 
     def analyze_position(self):
@@ -928,25 +960,58 @@ class ChessViewer(tk.Frame):
             # Get current position
             board = chess.Board()
             if self.current_game:
-                moves = list(self.current_game.mainline_moves())
-                for move in moves[:self.current_move_index]:
+                if isinstance(self.current_game, dict):
+                    pgn_str = self.current_game.get('pgn', '')
+                    if pgn_str:
+                        game = chess.pgn.read_game(io.StringIO(pgn_str))
+                        if game:
+                            moves = list(game.mainline_moves())
+                            for move in moves[:self.current_move_index]:
+                                board.push(move)
+                else:
+                    moves = list(self.current_game.mainline_moves())
+                    for move in moves[:self.current_move_index]:
+                        board.push(move)
+            
+            # Clear previous analysis
+            self.analysis_text.delete('1.0', tk.END)
+            
+            # Get multiple lines of analysis
+            multipv_info = self.engine.analyse(
+                board, 
+                chess.engine.Limit(depth=self.engine_depth),
+                multipv=self.num_lines
+            )
+            
+            # Display each line
+            for i, info in enumerate(multipv_info, 1):
+                score = info["score"].white()
+                
+                # Convert score to string
+                if score.is_mate():
+                    eval_str = f"Mate in {score.mate()}"
+                else:
+                    eval_str = f"{score.score() / 100:.2f}"
+                
+                # Get the PV (principal variation) moves
+                pv_moves = []
+                for move in info.get("pv", []):
+                    san = board.san(move)
+                    pv_moves.append(san)
                     board.push(move)
-            
-            # Get engine evaluation
-            info = self.engine.analyse(board, chess.engine.Limit(depth=self.engine_depth))
-            score = info["score"].white()
-            
-            # Convert score to string
-            if score.is_mate():
-                eval_str = f"Mate in {score.mate()}"
-            else:
-                eval_str = f"{score.score() / 100:.2f}"
-            
-            self.eval_var.set(f"Evaluation: {eval_str}")
+                
+                # Reset board for next line
+                for _ in range(len(pv_moves)):
+                    board.pop()
+                
+                # Format the line
+                line = f"Line {i}: {eval_str} | {' '.join(pv_moves[:6])}...\n"
+                self.analysis_text.insert(tk.END, line)
             
         except Exception as e:
-            print(f"Analysis error: {e}")
+            logger.error(f"Analysis error: {e}")
             self.analyzing = False
+            self.analyze_button.configure(text="Analyze Position")
 
     def __del__(self):
         """Cleanup when object is destroyed."""
@@ -998,6 +1063,185 @@ class ChessViewer(tk.Frame):
         except Exception as e:
             logger.error(f"Error converting moves to game object: {e}")
             return None
+
+    def prev_game(self):
+        """Go to the previous game in the list."""
+        if not self.games_list:
+            return
+        
+        current_index = self.game_listbox.curselection()
+        if not current_index:
+            return
+        
+        new_index = current_index[0] - 1
+        if new_index >= 0:
+            self.game_listbox.selection_clear(0, tk.END)
+            self.game_listbox.selection_set(new_index)
+            self.game_listbox.see(new_index)
+            self.current_game = self.games_list[new_index]
+            self.current_move_index = 0
+            self.update_game_info()
+            self.update_pieces()
+
+    def next_game(self):
+        """Go to the next game in the list."""
+        if not self.games_list:
+            return
+        
+        current_index = self.game_listbox.curselection()
+        if not current_index:
+            return
+        
+        new_index = current_index[0] + 1
+        if new_index < len(self.games_list):
+            self.game_listbox.selection_clear(0, tk.END)
+            self.game_listbox.selection_set(new_index)
+            self.game_listbox.see(new_index)
+            self.current_game = self.games_list[new_index]
+            self.current_move_index = 0
+            self.update_game_info()
+            self.update_pieces()
+
+    def increase_lines(self):
+        """Increase the number of analysis lines shown."""
+        if self.num_lines < self.max_lines:
+            self.num_lines += 1
+            if self.analyzing:
+                self.analyze_position()
+
+    def decrease_lines(self):
+        """Decrease the number of analysis lines shown."""
+        if self.num_lines > 1:
+            self.num_lines -= 1
+            if self.analyzing:
+                self.analyze_position()
+
+    def setup_right_panel(self):
+        """Set up the right panel with game info, analysis, and moves."""
+        theme = self.themes[self.current_theme]
+        
+        # Game info display
+        self.info_frame = ttk.LabelFrame(self.right_frame, text="Game Info")
+        self.info_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        info_scroll = ttk.Scrollbar(self.info_frame)
+        info_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.info_text = tk.Text(
+            self.info_frame,
+            height=6,
+            wrap=tk.WORD,
+            yscrollcommand=info_scroll.set,
+            bg=theme['text_bg'],
+            fg=theme['text_fg']
+        )
+        self.info_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        info_scroll.config(command=self.info_text.yview)
+        
+        # Analysis frame
+        self.analysis_frame = ttk.LabelFrame(self.right_frame, text="Engine Analysis")
+        self.analysis_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Analysis controls
+        self.analysis_controls = ttk.Frame(self.analysis_frame)
+        self.analysis_controls.pack(fill=tk.X, padx=5, pady=2)
+        
+        self.analyze_button = ttk.Button(
+            self.analysis_controls, 
+            text="Start Engine",
+            command=self.toggle_analysis
+        )
+        self.analyze_button.pack(side=tk.LEFT, padx=2)
+        
+        ttk.Label(self.analysis_controls, text="Lines:").pack(side=tk.LEFT, padx=(10,2))
+        ttk.Button(
+            self.analysis_controls,
+            text="-",
+            width=2,
+            command=self.decrease_lines
+        ).pack(side=tk.LEFT, padx=2)
+        
+        ttk.Button(
+            self.analysis_controls,
+            text="+",
+            width=2,
+            command=self.increase_lines
+        ).pack(side=tk.LEFT, padx=2)
+        
+        # Analysis text
+        analysis_scroll = ttk.Scrollbar(self.analysis_frame)
+        analysis_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.analysis_text = tk.Text(
+            self.analysis_frame,
+            height=6,
+            wrap=tk.WORD,
+            yscrollcommand=analysis_scroll.set,
+            bg=theme['text_bg'],
+            fg=theme['text_fg']
+        )
+        self.analysis_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        analysis_scroll.config(command=self.analysis_text.yview)
+        
+        # Moves display
+        self.moves_frame = ttk.LabelFrame(self.right_frame, text="Moves")
+        self.moves_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        moves_scroll = ttk.Scrollbar(self.moves_frame)
+        moves_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.moves_text = tk.Text(
+            self.moves_frame,
+            wrap=tk.WORD,
+            yscrollcommand=moves_scroll.set,
+            bg=theme['text_bg'],
+            fg=theme['text_fg'],
+            cursor="arrow"
+        )
+        self.moves_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        moves_scroll.config(command=self.moves_text.yview)
+        
+        # Initialize move positions dictionary
+        self.move_positions = {}
+
+    def prev_ply(self, event=None):
+        """Go back one ply (half-move)."""
+        if self.current_game and self.current_move_index > 0:
+            self.current_move_index -= 1
+            self.update_pieces()
+        # Always prevent event from propagating
+        return "break"
+
+    def next_ply(self, event=None):
+        """Go forward one ply (half-move)."""
+        if not self.current_game:
+            return "break"
+        
+        try:
+            # Get moves list
+            if isinstance(self.current_game, dict):
+                pgn_str = self.current_game.get('pgn', '')
+                if not pgn_str:
+                    return "break"
+                    
+                game = chess.pgn.read_game(io.StringIO(pgn_str))
+                if game:
+                    moves = list(game.mainline_moves())
+                else:
+                    return "break"
+            else:
+                moves = list(self.current_game.mainline_moves())
+            
+            # Check if we can move forward one ply
+            if self.current_move_index < len(moves):
+                self.current_move_index += 1
+                self.update_pieces()
+            
+        except Exception as e:
+            logger.error(f"Error in next_ply: {e}")
+        
+        # Always prevent event from propagating
+        return "break"
 
 if __name__ == "__main__":
     root = tk.Tk()
