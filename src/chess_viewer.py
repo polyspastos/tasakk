@@ -354,7 +354,7 @@ class ChessViewer(tk.Frame):
             yscrollcommand=games_scroll.set,
             bg=self.themes[self.current_theme]['listbox_bg'],
             fg=self.themes[self.current_theme]['listbox_fg'],
-            selectmode=tk.SINGLE
+            selectmode=tk.EXTENDED
         )
         self.game_listbox.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         games_scroll.config(command=self.game_listbox.yview)
@@ -401,6 +401,15 @@ class ChessViewer(tk.Frame):
         # Bind resize events
         self.canvas.bind('<Configure>', self.resize_board)
         self.game_listbox.bind('<<ListboxSelect>>', self.on_select_game)
+        
+        # Add right-click context menu to game listbox
+        self.game_listbox.bind("<Button-3>", self.show_context_menu)
+        
+        # Create context menu
+        self.context_menu = tk.Menu(self.root, tearoff=0)
+        self.context_menu.add_command(label="Export Selected to PGN", command=self.export_selected_to_pgn)
+        self.context_menu.add_command(label="Add Selected to Master DB", command=lambda: self.add_selected_to_db())
+        self.context_menu.add_command(label="Add Selected to Custom DB", command=lambda: self.add_selected_to_db(custom=True))
 
     def create_default_pieces(self):
         print("Starting create_default_pieces...")
@@ -567,71 +576,63 @@ class ChessViewer(tk.Frame):
         self.engine_depth = engine_depth
         self.open_pgn(pgn_path)
 
-    def open_pgn(self, file_path=None):
-        """Open and load a PGN file."""
-        # If no file path provided, show file dialog
-        if file_path is None:
-            file_path = filedialog.askopenfilename(
-                filetypes=[("PGN files", "*.pgn"), ("All files", "*.*")]
-            )
-        
-        if not file_path:
-            return
-
+    def open_pgn(self, filename=None):
+        """Open and parse a PGN file."""
         try:
-            # Make sure GUI elements exist before using them
-            if not hasattr(self, 'game_listbox') or not hasattr(self, 'info_text'):
-                raise Exception("GUI elements not initialized")
-                
-            self.games_list = self.parser.parse_file(file_path)
-            if not self.games_list:
-                raise Exception("No valid games found in file")
-                
-            self.game_listbox.delete(0, tk.END)
-            
-            for game in self.games_list:
-                game_str = self.format_game_display(game)
-                self.game_listbox.insert(tk.END, game_str)
-            
-            if self.parser.errors:
-                messagebox.showwarning(
-                    "Parser Warnings",
-                    f"Some games could not be parsed:\n\n" + "\n".join(self.parser.errors[:5])
+            if not filename:
+                filename = filedialog.askopenfilename(
+                    defaultextension=".pgn",
+                    filetypes=[("PGN files", "*.pgn"), ("All files", "*.*")]
                 )
+            if not filename:
+                return
+                
+            # Parse PGN file
+            parser = PGNParser()
+            games = parser.parse_file(filename)
             
-            # Select and load the first game if available
-            if self.games_list:
-                self.game_listbox.selection_set(0)
-                self.current_game = self.games_list[0]
-                self.current_move_index = 0
-                self.update_game_info()
-                self.update_pieces()
-            
-            self.game_listbox.bind('<<ListboxSelect>>', self.on_select_game)
+            if games:
+                logger.info(f"Parsed {len(games)} games from {filename}")
+                self.add_games_to_list(games)
+            else:
+                messagebox.showwarning("Warning", "No games found in file")
                 
         except Exception as e:
-            logger.error(f"Error loading PGN file: {e}")
-            messagebox.showerror("Error", f"Error loading PGN file: {str(e)}")
+            error_msg = f"Error opening PGN file: {str(e)}"
+            logger.error(error_msg)
+            messagebox.showerror("Error", error_msg)
 
     def format_game_display(self, game):
-        """Format a game for display in the listbox."""
+        """Format game data for display."""
         try:
-            white = game.get('White', game.get('white', 'Unknown'))
-            black = game.get('Black', game.get('black', 'Unknown'))
-            result = game.get('Result', game.get('result', '*'))
-            event = game.get('Event', game.get('event', ''))
-            date = game.get('Date', game.get('date', ''))
-            
-            display = f"{white} - {black} ({result})"
-            if event:
-                display += f" | {event}"
-            if date:
-                display += f" {date}"
+            # Handle PGN-sourced games (chess.pgn.Game objects)
+            if isinstance(game, chess.pgn.Game):
+                header = ""
+                for key, value in game.headers.items():
+                    header += f"{key}: {value}\n"
+                return header
                 
-            return display
+            # Handle database-sourced games (tuples)
+            elif isinstance(game, tuple):
+                # Assuming order: id,event,site,date,round,white_id,black_id,result,white_elo,black_elo,eco,pgn,import_date,white_name,black_name
+                header = f"Event: {game[1]}\n"
+                header += f"Site: {game[2]}\n"
+                header += f"Date: {game[3]}\n"
+                header += f"Round: {game[4]}\n"
+                header += f"White: {game[-2]}\n"  # white_name from JOIN
+                header += f"Black: {game[-1]}\n"  # black_name from JOIN
+                header += f"Result: {game[7]}\n"
+                if game[8]:  # white_elo
+                    header += f"White Elo: {game[8]}\n"
+                if game[9]:  # black_elo
+                    header += f"Black Elo: {game[9]}\n"
+                if game[10]:  # eco
+                    header += f"ECO: {game[10]}\n"
+                return header
+                
         except Exception as e:
             logger.error(f"Error formatting game display: {e}")
-            return "Error formatting game"
+            return "Error formatting game for display"
 
     def open_database(self):
         db_path = filedialog.askopenfilename(
@@ -646,13 +647,21 @@ class ChessViewer(tk.Frame):
                 raise Exception("Could not connect to database")
                 
             # Load games from database
-            games = self.db.get_games(limit=100)  # Load first 100 games
+            games = self.db.get_all_games()
+            if not games:
+                messagebox.showinfo("Info", "No games found in database")
+                return
+                
             self.games_list = []
             self.game_listbox.delete(0, tk.END)
             
             for game in games:
-                game_str = self.format_game_display(game)
-                self.game_listbox.insert(tk.END, game_str)
+                # The last two columns are white_name and black_name from our JOINs
+                white_name = game[-2]  # Second to last column
+                black_name = game[-1]  # Last column
+                display_text = f"{white_name} vs {black_name}"
+                
+                self.game_listbox.insert(tk.END, display_text)
                 self.games_list.append(game)
                 
         except Exception as e:
@@ -838,20 +847,24 @@ class ChessViewer(tk.Frame):
             
             # Get current position from moves
             board = chess.Board()
+            
             if self.current_game:
-                if isinstance(self.current_game, dict):
-                    pgn_str = self.current_game.get('pgn', '')
+                # Handle database games (tuples)
+                if isinstance(self.current_game, tuple):
+                    pgn_str = self.current_game[11]  # pgn column
                     if pgn_str:
                         game = chess.pgn.read_game(io.StringIO(pgn_str))
                         if game:
                             moves = list(game.mainline_moves())
                             for move in moves[:self.current_move_index]:
                                 board.push(move)
-                else:
+                            
+                # Handle PGN-sourced games - keep original logic
+                elif isinstance(self.current_game, chess.pgn.Game):
                     moves = list(self.current_game.mainline_moves())
                     for move in moves[:self.current_move_index]:
                         board.push(move)
-            
+                
             # Convert board position to our format
             position = [['.'] * 8 for _ in range(8)]
             for square in chess.SQUARES:
@@ -884,53 +897,50 @@ class ChessViewer(tk.Frame):
             logger.error(f"Error updating pieces: {e}")
 
     def update_moves_display(self):
-        """Update the moves text display with clickable moves."""
+        """Update the moves text display."""
         try:
-            if hasattr(self, 'moves_text'):
-                if self.current_game:
-                    self.moves_text.delete('1.0', tk.END)
-                    
-                    # Configure tag for clickable moves
-                    self.moves_text.tag_configure("clickable", 
-                        foreground="lightblue",
-                        underline=True)
-                    
-                    # Get moves
-                    if isinstance(self.current_game, dict):
-                        game = chess.pgn.read_game(io.StringIO(self.current_game.get('pgn', '')))
-                        if game:
-                            moves = list(game.mainline_moves())
+            self.moves_text.delete('1.0', tk.END)
+            
+            if not self.current_game:
+                return
+                
+            # Get moves based on game type
+            if isinstance(self.current_game, tuple):
+                # Database game
+                pgn_str = self.current_game[11]  # pgn column
+                if pgn_str:
+                    game = chess.pgn.read_game(io.StringIO(pgn_str))
+                    if game:
+                        moves = list(game.mainline_moves())
                     else:
-                        moves = list(self.current_game.mainline_moves())
-                    
-                    board = chess.Board()
-                    
-                    # Store move positions for click handling
-                    self.move_positions = {}  # Clear previous positions
-                    
-                    for i, move in enumerate(moves):
-                        # Add move number
-                        if i % 2 == 0:
-                            move_num = f"{i//2 + 1}. "
-                            self.moves_text.insert(tk.END, move_num)
-                        
-                        # Add move (without space in clickable region)
-                        move_san = board.san(move)
-                        start_index = self.moves_text.index("end-1c")
-                        self.moves_text.insert(tk.END, move_san, "clickable")
-                        end_index = self.moves_text.index("end-1c")
-                        # Add space after the clickable region
-                        self.moves_text.insert(tk.END, " ")
-                        
-                        # Store the move position and index
-                        self.move_positions[f"{start_index}:{end_index}"] = i
-                        
-                        board.push(move)
-                    
-                    # Bind click event
-                    self.moves_text.tag_bind("clickable", "<Button-1>", self.on_move_click)
-                    self.moves_text.config(cursor="hand2")
-                    
+                        moves = []
+            else:
+                # PGN game
+                moves = list(self.current_game.mainline_moves())
+            
+            # Format and display moves
+            board = chess.Board()
+            move_pairs = []
+            current_pair = []
+            
+            for i, move in enumerate(moves):
+                san = board.san(move)
+                if i == self.current_move_index - 1:
+                    san = f"[{san}]"  # Highlight current move
+                
+                current_pair.append(san)
+                board.push(move)
+                
+                if len(current_pair) == 2:
+                    move_num = i // 2 + 1
+                    move_pairs.append(f"{move_num}. {current_pair[0]} {current_pair[1]}")
+                    current_pair = []
+                elif i == len(moves) - 1 and current_pair:  # Last move if odd
+                    move_num = i // 2 + 1
+                    move_pairs.append(f"{move_num}. {current_pair[0]}")
+            
+            self.moves_text.insert('1.0', "  ".join(move_pairs))
+            
         except Exception as e:
             logger.error(f"Error updating moves display: {e}")
 
@@ -956,41 +966,36 @@ class ChessViewer(tk.Frame):
     def update_game_info(self):
         """Update the game information display."""
         if not self.current_game:
-            self.info_text.delete('1.0', tk.END)
             return
         
         try:
-            info = []
-            # Handle both dictionary and chess.pgn.Game objects
-            if isinstance(self.current_game, dict):
-                game = self.current_game
-                info.extend([
-                    f"Event: {game.get('Event', game.get('event', 'Unknown'))}",
-                    f"Site: {game.get('Site', game.get('site', 'Unknown'))}",
-                    f"Date: {game.get('Date', game.get('date', '?'))}",
-                    f"Round: {game.get('Round', game.get('round', '?'))}",
-                    f"White: {game.get('White', game.get('white', '?'))}",
-                    f"Black: {game.get('Black', game.get('black', '?'))}",
-                    f"Result: {game.get('Result', game.get('result', '*'))}"
-                ])
-            else:
-                headers = self.current_game.headers
-                info.extend([
-                    f"Event: {headers.get('Event', 'Unknown')}",
-                    f"Site: {headers.get('Site', 'Unknown')}",
-                    f"Date: {headers.get('Date', '?')}",
-                    f"Round: {headers.get('Round', '?')}",
-                    f"White: {headers.get('White', '?')}",
-                    f"Black: {headers.get('Black', '?')}",
-                    f"Result: {headers.get('Result', '*')}"
-                ])
-            
+            # Format and display game info
+            info_text = self.format_game_display(self.current_game)
             self.info_text.delete('1.0', tk.END)
-            self.info_text.insert('1.0', '\n'.join(info))
+            self.info_text.insert('1.0', info_text)
+            
+            # Get PGN moves
+            if isinstance(self.current_game, chess.pgn.Game):
+                # PGN-sourced game
+                self.moves = list(self.current_game.mainline_moves())
+            else:
+                # Database-sourced game - parse PGN text
+                pgn_io = io.StringIO(self.current_game[11])  # pgn column
+                game = chess.pgn.read_game(pgn_io)
+                if game:
+                    self.moves = list(game.mainline_moves())
+                else:
+                    self.moves = []
+                    logger.error("Failed to parse PGN from database")
+            
+            # Reset board
+            self.board.reset()
+            self.current_move_index = 0
+            self.update_pieces()
+            
         except Exception as e:
             logger.error(f"Error updating game info: {e}")
-            self.info_text.delete('1.0', tk.END)
-            self.info_text.insert('1.0', "Error displaying game information")
+            messagebox.showerror("Error", "Failed to update game information")
 
     def initialize_engine(self):
         """Initialize the chess engine."""
@@ -1263,41 +1268,30 @@ class ChessViewer(tk.Frame):
         self.move_positions = {}
 
     def prev_ply(self, event=None):
-        """Go back one ply (half-move)."""
-        if self.current_game and self.current_move_index > 0:
+        """Go to the previous ply (half-move) in the current game."""
+        if not hasattr(self, 'moves') or not self.moves:
+            return
+        
+        if self.current_move_index > 0:
+            self.board.pop()
             self.current_move_index -= 1
             self.update_pieces()
+            if self.analyzing:
+                self.analyze_position()
         # Always prevent event from propagating
         return "break"
 
     def next_ply(self, event=None):
-        """Go forward one ply (half-move)."""
-        if not self.current_game:
-            return "break"
+        """Go to the next ply (half-move) in the current game."""
+        if not hasattr(self, 'moves') or not self.moves:
+            return
         
-        try:
-            # Get moves list
-            if isinstance(self.current_game, dict):
-                pgn_str = self.current_game.get('pgn', '')
-                if not pgn_str:
-                    return "break"
-                    
-                game = chess.pgn.read_game(io.StringIO(pgn_str))
-                if game:
-                    moves = list(game.mainline_moves())
-                else:
-                    return "break"
-            else:
-                moves = list(self.current_game.mainline_moves())
-            
-            # Check if we can move forward one ply
-            if self.current_move_index < len(moves):
-                self.current_move_index += 1
-                self.update_pieces()
-            
-        except Exception as e:
-            logger.error(f"Error in next_ply: {e}")
-        
+        if self.current_move_index < len(self.moves):
+            self.board.push(self.moves[self.current_move_index])
+            self.current_move_index += 1
+            self.update_pieces()
+            if self.analyzing:
+                self.analyze_position()
         # Always prevent event from propagating
         return "break"
 
@@ -1452,6 +1446,214 @@ class ChessViewer(tk.Frame):
         finally:
             self.root.quit()
             self.root.destroy()
+
+    def show_context_menu(self, event):
+        """Show context menu on right click."""
+        try:
+            # Only show if there are selected items
+            if self.game_listbox.curselection():
+                self.context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.context_menu.grab_release()
+
+    def export_selected_to_pgn(self):
+        """Export selected games to a new PGN file."""
+        selected_indices = self.game_listbox.curselection()
+        if not selected_indices:
+            return
+        
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".pgn",
+            filetypes=[("PGN files", "*.pgn"), ("All files", "*.*")]
+        )
+        
+        if file_path:
+            try:
+                selected_games = [self.games_list[i] for i in selected_indices]
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    for game in selected_games:
+                        if isinstance(game, tuple):
+                            # Format database game as PGN
+                            # Assuming order: id,event,site,date,round,white_id,black_id,result,white_elo,black_elo,eco,pgn,import_date,white_name,black_name
+                            headers = [
+                                f'[Event "{game[1] or "?"}"]',
+                                f'[Site "{game[2] or "?"}"]',
+                                f'[Date "{game[3] or "?"}"]',
+                                f'[Round "{game[4] or "?"}"]',
+                                f'[White "{game[-2] or "?"}"]',  # white_name
+                                f'[Black "{game[-1] or "?"}"]',  # black_name
+                                f'[Result "{game[7] or "?"}"]'
+                            ]
+                            if game[8]:  # white_elo
+                                headers.append(f'[WhiteElo "{game[8]}"]')
+                            if game[9]:  # black_elo
+                                headers.append(f'[BlackElo "{game[9]}"]')
+                            if game[10]:  # eco
+                                headers.append(f'[ECO "{game[10]}"]')
+                            
+                            # Write headers and moves
+                            f.write('\n'.join(headers) + '\n\n')
+                            f.write(game[11] + '\n\n\n')  # pgn column
+                        else:
+                            # Regular PGN game
+                            f.write(str(game) + '\n\n')
+                            
+                messagebox.showinfo("Success", f"Exported {len(selected_indices)} games to {file_path}")
+            except Exception as e:
+                logger.error(f"Failed to export games: {e}")
+                messagebox.showerror("Error", f"Failed to export games: {str(e)}")
+
+    def add_selected_to_db(self, custom=False):
+        """Add selected games to database."""
+        selected_indices = self.game_listbox.curselection()
+        if not selected_indices:
+            return
+        
+        try:
+            if custom:
+                db_path = filedialog.asksaveasfilename(
+                    defaultextension=".db",
+                    filetypes=[("SQLite databases", "*.db"), ("All files", "*.*")]
+                )
+                if not db_path:
+                    return
+            else:
+                db_path = os.path.join('data', 'master.db')
+                os.makedirs('data', exist_ok=True)
+                
+            db = ChessDatabase(db_path)
+            if not db.connect():
+                raise Exception("Failed to connect to database")
+            
+            added = 0
+            errors = []
+            
+            for game in [self.games_list[i] for i in selected_indices]:
+                try:
+                    # Use the dictionary data directly
+                    if isinstance(game, dict):
+                        game_data = {
+                            'event': game.get('Event', '?'),
+                            'site': game.get('Site', '?'),
+                            'date': game.get('Date', '?'),
+                            'round': game.get('Round', '?'),
+                            'white': game.get('White', 'Unknown'),
+                            'black': game.get('Black', 'Unknown'),
+                            'result': game.get('Result', '?'),
+                            'white_elo': parse_elo(game.get('WhiteElo', '0')),
+                            'black_elo': parse_elo(game.get('BlackElo', '0')),
+                            'eco': game.get('ECO', '?'),
+                            'pgn': game.get('pgn', '')
+                        }
+                    else:
+                        # Fallback for non-dictionary games
+                        pgn_text = str(game)
+                        game_obj = chess.pgn.read_game(io.StringIO(pgn_text))
+                        if game_obj:
+                            headers = game_obj.headers
+                            game_data = {
+                                'event': headers.get('Event', '?'),
+                                'site': headers.get('Site', '?'),
+                                'date': headers.get('Date', '?'),
+                                'round': headers.get('Round', '?'),
+                                'white': headers.get('White', 'Unknown'),
+                                'black': headers.get('Black', 'Unknown'),
+                                'result': headers.get('Result', '?'),
+                                'white_elo': parse_elo(headers.get('WhiteElo', '0')),
+                                'black_elo': parse_elo(headers.get('BlackElo', '0')),
+                                'eco': headers.get('ECO', '?'),
+                                'pgn': pgn_text
+                            }
+                
+                    print("\n=== Game Data to be Added ===")
+                    print(f"White: {game_data['white']}")
+                    print(f"Black: {game_data['black']}")
+                    print(f"Event: {game_data['event']}")
+                    
+                    if db.add_game(game_data):
+                        added += 1
+                    else:
+                        errors.append(f"Failed to add game {added + len(errors) + 1}")
+                        
+                except Exception as e:
+                    error_msg = f"Failed to add game {added + len(errors) + 1}: {str(e)}"
+                    logger.error(error_msg)
+                    errors.append(error_msg)
+            
+            if errors:
+                message = f"Added {added} games to database.\n\nErrors ({len(errors)}):\n"
+                message += "\n".join(errors[:5])
+                if len(errors) > 5:
+                    message += f"\n... and {len(errors) - 5} more errors"
+                messagebox.showwarning("Partial Success", message)
+            else:
+                messagebox.showinfo("Success", f"Added {added} games to database")
+            
+            db.close()
+            
+        except Exception as e:
+            error_msg = f"Database error: {str(e)}"
+            logger.error(error_msg)
+            messagebox.showerror("Error", error_msg)
+
+    def update_games_list(self):
+        """Update the games listbox with current games."""
+        self.game_listbox.delete(0, tk.END)
+        for game in self.games_list:
+            game_str = format_game_display(game)
+            self.game_listbox.insert(tk.END, game_str)
+        
+        # Select and load the first game if available
+        if self.games_list:
+            self.game_listbox.selection_set(0)
+            self.current_game = self.games_list[0]
+            self.current_move_index = 0
+            self.update_game_info()
+            self.update_pieces()
+
+    def add_games_to_list(self, games):
+        """Add games to the list and listbox."""
+        try:
+            logger.info(f"Adding {len(games) if games else 0} games to list")
+            self.game_listbox.delete(0, tk.END)
+            self.games_list.clear()
+            
+            for game in games:
+                self.games_list.append(game)
+                
+                # For PGN-sourced games (chess.pgn.Game objects)
+                if isinstance(game, chess.pgn.Game):
+                    white = game.headers.get('White', '?')
+                    black = game.headers.get('Black', '?')
+                    result = game.headers.get('Result', '?')
+                    display_text = f"{white} vs {black} ({result})"
+                    
+                # For database-sourced games (tuples)
+                elif isinstance(game, tuple):
+                    white = game[-2]  # white_name from JOIN
+                    black = game[-1]  # black_name from JOIN
+                    result = game[7]  # result column
+                    display_text = f"{white} vs {black} ({result})"
+                    
+                else:
+                    logger.warning(f"Unknown game format: {type(game)}")
+                    logger.warning(f"Game data: {game}")
+                    continue
+                    
+                self.game_listbox.insert(tk.END, display_text)
+                
+            logger.info(f"Added {len(self.games_list)} games to list")
+            
+            # Select first game if available
+            if self.games_list:
+                self.game_listbox.selection_set(0)
+                self.current_game = self.games_list[0]
+                self.current_move_index = 0
+                self.update_game_info()
+                self.update_pieces()
+                
+        except Exception as e:
+            logger.error(f"Error adding games to list: {e}")
 
 if __name__ == "__main__":
     root = tk.Tk()

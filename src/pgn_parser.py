@@ -1,6 +1,7 @@
 import chess.pgn
 from typing import List, Dict, Optional
 import logging
+import io
 
 # Set up logging
 logging.basicConfig(
@@ -20,61 +21,25 @@ class PGNParser:
         self.games: List[Dict] = []
         self.errors: List[str] = []
 
-    def parse_file(self, file_path: str) -> List[Dict]:
-        """Parse a PGN file and return a list of games."""
-        games = []
-        current_headers = {}
-        current_moves = []
-        in_headers = True  # Start in header section
-        
+    def parse_file(self, filename):
+        """Parse a PGN file and return list of games."""
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-        except Exception as e:
-            logger.error(f"Failed to open PGN file {file_path}: {e}")
-            return []
-
-        try:
-            for line_num, line in enumerate(lines, 1):
-                line = line.strip()
-                
-                # Empty line marks separation between headers and moves
-                if not line:
-                    in_headers = True  # Reset to headers for next game
-                    if current_headers and current_moves:
-                        game = self._create_game_dict(current_headers, current_moves)
-                        if game:
-                            games.append(game)
-                        current_headers = {}
-                        current_moves = []
-                    continue
-
-                # Parse headers
-                if line.startswith('['):
-                    in_headers = True
-                    try:
-                        tag, value = self._parse_header_line(line)
-                        if tag and value:
-                            current_headers[tag] = value
-                    except Exception as e:
-                        logger.warning(f"Error parsing header at line {line_num}: {e}")
-                # Parse moves (any non-header line after headers section)
-                elif not in_headers or not line.startswith('['):
-                    in_headers = False
-                    current_moves.append(line)
-
-            # Don't forget the last game
-            if current_headers and current_moves:
-                game = self._create_game_dict(current_headers, current_moves)
-                if game:
+            with open(filename, encoding='utf-8-sig') as pgn:
+                games = []
+                while True:
+                    game = chess.pgn.read_game(pgn)
+                    if game is None:
+                        break
+                    # Return the chess.pgn.Game object directly
                     games.append(game)
-
-            logger.info(f"Successfully parsed {len(games)} games from {file_path}")
-            return games
-
+                
+                logger.info(f"Successfully parsed {len(games)} games from {filename}")
+                return games
+                
         except Exception as e:
+            self.errors.append(f"Error parsing file {filename}: {str(e)}")
             logger.error(f"Error parsing PGN file: {e}")
-            return []
+            return None
 
     def _parse_header_line(self, line: str) -> tuple[Optional[str], Optional[str]]:
         """Parse a single header line."""
@@ -131,4 +96,28 @@ class PGNParser:
             
         except Exception as e:
             logger.error(f"Failed to create game dictionary: {e}")
+            return None
+
+    def parse_game(self, pgn_text):
+        """Parse a single game from PGN text."""
+        try:
+            game = chess.pgn.read_game(io.StringIO(pgn_text))
+            if game:
+                # Extract headers
+                headers = game.headers
+                return {
+                    'event': headers.get('Event', '?'),
+                    'site': headers.get('Site', '?'),
+                    'date': headers.get('Date', '?'),
+                    'round': headers.get('Round', '?'),
+                    'white': headers.get('White', 'Unknown'),
+                    'black': headers.get('Black', 'Unknown'),
+                    'result': headers.get('Result', '?'),
+                    'white_elo': headers.get('WhiteElo', '0'),
+                    'black_elo': headers.get('BlackElo', '0'),
+                    'eco': headers.get('ECO', '?'),
+                    'pgn': pgn_text
+                }
+        except Exception as e:
+            self.errors.append(f"Error parsing game: {str(e)}")
             return None
