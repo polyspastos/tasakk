@@ -8,75 +8,45 @@ class WelcomeScreen(tk.Toplevel):
         
         # Window setup
         self.title("Welcome to Chess Viewer")
-        self.geometry("600x500")
+        self.geometry("600x400")
         self.resizable(False, False)
         
-        # Center the window
-        self.center_window()
+        # Use consistent font
+        default_font = ('Consolas', 10)
+        title_font = ('Consolas', 24, 'bold')
+        version_font = ('Consolas', 8)
         
-        # Configure the grid
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(0, weight=1)
+        self.option_add('*Font', default_font)
+        style = ttk.Style()
+        style.configure('.', font=default_font)
         
         # Main frame
         main_frame = ttk.Frame(self, padding="20")
-        main_frame.grid(row=0, column=0, sticky="nsew")
+        main_frame.pack(fill="both", expand=True)
         
         # Title
         title_label = ttk.Label(main_frame, 
                               text="Chess Viewer", 
-                              font=('Helvetica', 24, 'bold'))
+                              font=title_font)
         title_label.pack(pady=20)
         
-        # Mode selection frame
-        mode_frame = ttk.LabelFrame(main_frame, text="Select Mode", padding="20")
-        mode_frame.pack(fill="x", pady=20)
+        # Welcome message
+        welcome_text = "Welcome to Chess Viewer!\n\n" \
+                      "This application allows you to:\n" \
+                      "• View and analyze chess games\n" \
+                      "• Load PGN files\n" \
+                      "• Use chess engines for analysis\n" \
+                      "• Save games to a database"
         
-        # Play mode button
-        play_btn = ttk.Button(mode_frame, 
-                            text="Play Chess",
-                            command=self.start_play_mode,
-                            width=30)
-        play_btn.pack(pady=10)
-        
-        # View PGN button
-        view_btn = ttk.Button(mode_frame, 
-                            text="View PGN Game",
-                            command=self.start_view_mode,
-                            width=30)
-        view_btn.pack(pady=10)
-        
-        # Engine options frame
-        engine_frame = ttk.LabelFrame(main_frame, text="Engine Options", padding="20")
-        engine_frame.pack(fill="x", pady=20)
-        
-        # Engine status
-        self.engine_path = os.path.join('res', 'stockfish', 'stockfish-windows-x86-64-avx2.exe')
-        engine_status = "Found" if os.path.exists(self.engine_path) else "Not Found"
-        engine_color = "green" if os.path.exists(self.engine_path) else "red"
-        
-        status_label = ttk.Label(engine_frame, 
-                               text=f"Stockfish Engine: {engine_status}",
-                               foreground=engine_color)
-        status_label.pack(pady=5)
-        
-        # Engine depth setting
-        depth_frame = ttk.Frame(engine_frame)
-        depth_frame.pack(pady=5)
-        
-        depth_label = ttk.Label(depth_frame, text="Analysis Depth:")
-        depth_label.pack(side=tk.LEFT, padx=5)
-        
-        self.depth_var = tk.StringVar(value="20")
-        depth_entry = ttk.Entry(depth_frame, 
-                              textvariable=self.depth_var,
-                              width=5)
-        depth_entry.pack(side=tk.LEFT, padx=5)
+        msg_label = ttk.Label(main_frame, 
+                             text=welcome_text,
+                             justify="left")
+        msg_label.pack(pady=20)
         
         # Version info
         version_label = ttk.Label(main_frame, 
                                 text="Version 1.0",
-                                font=('Helvetica', 8))
+                                font=version_font)
         version_label.pack(side=tk.BOTTOM, pady=10)
         
         # Store parent reference

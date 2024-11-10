@@ -32,6 +32,28 @@ class ChessViewer(tk.Frame):
         super().__init__(root)
         self.root = root
         
+        # Position window at 1/3 from left, 1/5 from top of screen
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        x = screen_width // 3
+        y = screen_height // 8
+        root.geometry(f"+{x}+{y}")  # Position window without changing its size
+        
+        # Set default font for all widgets
+        default_font = ('Consolas', 10)
+        self.option_add('*Font', default_font)
+        
+        # Configure specific fonts for ttk widgets
+        style = ttk.Style()
+        style.configure('.', font=default_font)
+        
+        # Configure specific widget classes to use Consolas
+        style.configure('TLabel', font=default_font)
+        style.configure('TButton', font=default_font)
+        style.configure('TEntry', font=default_font)
+        style.configure('Treeview', font=default_font)
+        style.configure('TLabelframe.Label', font=default_font)
+        
         # Theme colors with consistent dark mode
         self.themes = {
             'light': {
@@ -47,7 +69,9 @@ class ChessViewer(tk.Frame):
                 'listbox_fg': 'black',
                 'frame_bg': '#f0f0f0',
                 'menu_bg': '#f0f0f0',
-                'menu_fg': 'black'
+                'menu_fg': 'black',
+                'analysis_bg': 'white',
+                'analysis_fg': 'black'
             },
             'dark': {
                 'bg': '#1e1e1e',            # Darker background
@@ -62,7 +86,9 @@ class ChessViewer(tk.Frame):
                 'listbox_fg': '#ffffff',
                 'frame_bg': '#1e1e1e',      # Dark frames
                 'menu_bg': '#383838',       # Dark menus
-                'menu_fg': '#ffffff'
+                'menu_fg': '#ffffff',
+                'analysis_bg': '#2d2d2d',
+                'analysis_fg': '#ffffff'
             }
         }
         
@@ -114,8 +140,11 @@ class ChessViewer(tk.Frame):
         print("Drawing board...")
         self.draw_board()
         
+        # Open most recent PGN file
+        self.open_most_recent_pgn()
+        
         # Show welcome screen
-        self.after(100, lambda: WelcomeScreen(self))
+        # self.after(100, lambda: WelcomeScreen(self))
         
         # Bind events...
         print("ChessViewer initialization complete")
@@ -127,6 +156,20 @@ class ChessViewer(tk.Frame):
         # Add our specific bindings with high priority
         self.root.bind_all('<Left>', lambda e: self.prev_ply(e), add="+")
         self.root.bind_all('<Right>', lambda e: self.next_ply(e), add="+")
+        self.root.bind_all('<Up>', lambda e: self.first_move() or "break", add="+")
+        self.root.bind_all('<Down>', lambda e: self.last_move() or "break", add="+")
+        
+        # Add game navigation hotkeys
+        self.root.bind_all('n', lambda e: self.next_game() or "break", add="+")
+        self.root.bind_all('N', lambda e: self.next_game() or "break", add="+")
+        self.root.bind_all('p', lambda e: self.prev_game() or "break", add="+")
+        self.root.bind_all('P', lambda e: self.prev_game() or "break", add="+")
+        
+        # Try to find and load Stockfish by default
+        self.find_default_engine()
+        
+        # Bind cleanup to window closing
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def get_initial_position(self):
         """Return the initial chess position as a 2D array."""
@@ -161,6 +204,19 @@ class ChessViewer(tk.Frame):
         self.menubar.add_cascade(label="View", menu=view_menu)
         view_menu.add_command(label="Flip Board", command=self.flip_board)
         view_menu.add_command(label="Toggle Dark Mode", command=self.toggle_theme)
+        
+        # Engines menu
+        self.engines_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Engines", menu=self.engines_menu)
+        self.engines_menu.add_command(label="Select Engine...", command=self.select_engine)
+        self.engines_menu.add_command(label="Set Analysis Depth...", command=self.set_engine_depth)
+        self.engines_menu.add_separator()
+        
+        # Create a variable to track the selected engine
+        self.selected_engine = tk.StringVar()
+        
+        # Immediately populate the engines menu
+        self.update_engines_menu()
 
     def toggle_theme(self):
         """Toggle between light and dark themes."""
@@ -249,6 +305,16 @@ class ChessViewer(tk.Frame):
         if hasattr(self, 'canvas'):
             self.canvas.configure(bg=theme['bg'])
             self.update_pieces()
+        
+        # Configure analysis text specifically
+        if hasattr(self, 'analysis_text'):
+            self.analysis_text.configure(
+                bg=theme['analysis_bg'],
+                fg=theme['analysis_fg'],
+                insertbackground=theme['analysis_fg'],
+                selectbackground=theme['button_bg'],
+                selectforeground=theme['button_fg']
+            )
 
     def _configure_menu(self, menu, theme):
         """Configure menu colors recursively."""
@@ -271,11 +337,12 @@ class ChessViewer(tk.Frame):
         self.main_paned.pack(fill=tk.BOTH, expand=True)
         
         # Left panel for games list
-        self.left_frame = ttk.Frame(self.main_paned)
+        self.left_frame = ttk.Frame(self.main_paned, width=350)
+        self.left_frame.pack_propagate(False)
         self.main_paned.add(self.left_frame, weight=1)
         
         # Games list
-        self.games_frame = ttk.LabelFrame(self.left_frame, text="Games")
+        self.games_frame = ttk.LabelFrame(self.left_frame, text="games")
         self.games_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Game listbox with scrollbar
@@ -847,11 +914,13 @@ class ChessViewer(tk.Frame):
                             move_num = f"{i//2 + 1}. "
                             self.moves_text.insert(tk.END, move_num)
                         
-                        # Add move
+                        # Add move (without space in clickable region)
                         move_san = board.san(move)
                         start_index = self.moves_text.index("end-1c")
-                        self.moves_text.insert(tk.END, move_san + " ", "clickable")
+                        self.moves_text.insert(tk.END, move_san, "clickable")
                         end_index = self.moves_text.index("end-1c")
+                        # Add space after the clickable region
+                        self.moves_text.insert(tk.END, " ")
                         
                         # Store the move position and index
                         self.move_positions[f"{start_index}:{end_index}"] = i
@@ -924,21 +993,20 @@ class ChessViewer(tk.Frame):
             self.info_text.insert('1.0', "Error displaying game information")
 
     def initialize_engine(self):
-        """Initialize the Stockfish engine."""
-        if self.engine is None and self.engine_path and os.path.exists(self.engine_path):
-            try:
-                import chess.engine
+        """Initialize the chess engine."""
+        try:
+            if self.engine_path and os.path.exists(self.engine_path):
                 self.engine = chess.engine.SimpleEngine.popen_uci(self.engine_path)
-                self.engine.configure({"Threads": 2, "Hash": 128})
-            except Exception as e:
-                messagebox.showerror("Engine Error", f"Failed to start engine: {str(e)}")
-                self.engine = None
+                logger.info(f"Successfully initialized engine: {self.engine_path}")
+        except Exception as e:
+            logger.error(f"Failed to initialize engine: {e}")
+            self.engine = None
 
     def toggle_analysis(self):
         """Toggle engine analysis on/off."""
         if self.analyzing:
             self.analyzing = False
-            self.analyze_button.configure(text="Analyze Position")
+            self.analyze_button.configure(text="start")
             self.analysis_text.delete('1.0', tk.END)
             return
         
@@ -948,70 +1016,60 @@ class ChessViewer(tk.Frame):
                 return
         
         self.analyzing = True
-        self.analyze_button.configure(text="Stop Engine")
+        self.analyze_button.configure(text="stop")
         self.analyze_position()
 
     def analyze_position(self):
-        """Analyze the current position."""
-        if not self.analyzing or not self.engine:
+        """Analyze the current position with the chess engine."""
+        if not self.engine or not self.analyzing:
             return
         
         try:
             # Get current position
             board = chess.Board()
-            if self.current_game:
-                if isinstance(self.current_game, dict):
-                    pgn_str = self.current_game.get('pgn', '')
-                    if pgn_str:
-                        game = chess.pgn.read_game(io.StringIO(pgn_str))
-                        if game:
-                            moves = list(game.mainline_moves())
-                            for move in moves[:self.current_move_index]:
-                                board.push(move)
-                else:
-                    moves = list(self.current_game.mainline_moves())
-                    for move in moves[:self.current_move_index]:
-                        board.push(move)
+            if isinstance(self.current_game, dict):
+                game = chess.pgn.read_game(io.StringIO(self.current_game.get('pgn', '')))
+            else:
+                game = self.current_game
+                
+            if game:
+                moves = list(game.mainline_moves())[:self.current_move_index]
+                for move in moves:
+                    board.push(move)
             
             # Clear previous analysis
             self.analysis_text.delete('1.0', tk.END)
             
-            # Get multiple lines of analysis
-            multipv_info = self.engine.analyse(
-                board, 
+            # Get analysis info
+            info = self.engine.analyse(
+                board,
                 chess.engine.Limit(depth=self.engine_depth),
                 multipv=self.num_lines
             )
             
-            # Display each line
-            for i, info in enumerate(multipv_info, 1):
-                score = info["score"].white()
+            # Display each line of analysis
+            for i, line in enumerate(info):
+                score = line['score']  # Get the score directly
+                pv = line.get('pv', [])
                 
-                # Convert score to string
+                # Format the score
                 if score.is_mate():
-                    eval_str = f"Mate in {score.mate()}"
+                    score_str = f"M{score.mate()}"
                 else:
-                    eval_str = f"{score.score() / 100:.2f}"
+                    cp_score = score.relative.score()
+                    score_str = f"{cp_score/100:.2f}" if cp_score is not None else "0.00"
                 
-                # Get the PV (principal variation) moves
-                pv_moves = []
-                for move in info.get("pv", []):
-                    san = board.san(move)
-                    pv_moves.append(san)
-                    board.push(move)
-                
-                # Reset board for next line
-                for _ in range(len(pv_moves)):
-                    board.pop()
-                
-                # Format the line
-                line = f"Line {i}: {eval_str} | {' '.join(pv_moves[:6])}...\n"
-                self.analysis_text.insert(tk.END, line)
+                # Format and display the entire line
+                moves_str = board.variation_san(pv)
+                analysis_line = f"Line {i+1}: {score_str} {moves_str}\n"
+                self.analysis_text.insert(tk.END, analysis_line)
+            
+            self.analysis_text.see('1.0')  # Scroll to top
             
         except Exception as e:
             logger.error(f"Analysis error: {e}")
-            self.analyzing = False
-            self.analyze_button.configure(text="Analyze Position")
+            self.analysis_text.delete('1.0', tk.END)
+            self.analysis_text.insert('1.0', f"Analysis error: {str(e)}")
 
     def __del__(self):
         """Cleanup when object is destroyed."""
@@ -1121,7 +1179,7 @@ class ChessViewer(tk.Frame):
         theme = self.themes[self.current_theme]
         
         # Game info display
-        self.info_frame = ttk.LabelFrame(self.right_frame, text="Game Info")
+        self.info_frame = ttk.LabelFrame(self.right_frame, text="info")
         self.info_frame.pack(fill=tk.X, padx=5, pady=5)
         
         info_scroll = ttk.Scrollbar(self.info_frame)
@@ -1139,7 +1197,7 @@ class ChessViewer(tk.Frame):
         info_scroll.config(command=self.info_text.yview)
         
         # Analysis frame
-        self.analysis_frame = ttk.LabelFrame(self.right_frame, text="Engine Analysis")
+        self.analysis_frame = ttk.LabelFrame(self.right_frame, text="engine analysis")
         self.analysis_frame.pack(fill=tk.X, padx=5, pady=5)
         
         # Analysis controls
@@ -1148,7 +1206,7 @@ class ChessViewer(tk.Frame):
         
         self.analyze_button = ttk.Button(
             self.analysis_controls, 
-            text="Start Engine",
+            text="start",
             command=self.toggle_analysis
         )
         self.analyze_button.pack(side=tk.LEFT, padx=2)
@@ -1184,7 +1242,7 @@ class ChessViewer(tk.Frame):
         analysis_scroll.config(command=self.analysis_text.yview)
         
         # Moves display
-        self.moves_frame = ttk.LabelFrame(self.right_frame, text="Moves")
+        self.moves_frame = ttk.LabelFrame(self.right_frame, text="moves")
         self.moves_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         moves_scroll = ttk.Scrollbar(self.moves_frame)
@@ -1243,7 +1301,166 @@ class ChessViewer(tk.Frame):
         # Always prevent event from propagating
         return "break"
 
+    def set_engine_depth(self):
+        """Open dialog to set engine analysis depth."""
+        dialog = tk.Toplevel(self)
+        dialog.title("Set Analysis Depth")
+        dialog.geometry("300x100")
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        frame = ttk.Frame(dialog, padding="20")
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(frame, text="Analysis Depth:").pack(side=tk.LEFT, padx=5)
+        
+        depth_var = tk.StringVar(value=str(self.engine_depth))
+        depth_entry = ttk.Entry(frame, textvariable=depth_var, width=5)
+        depth_entry.pack(side=tk.LEFT, padx=5)
+        
+        def apply():
+            try:
+                new_depth = int(depth_var.get())
+                if 1 <= new_depth <= 30:
+                    self.engine_depth = new_depth
+                    dialog.destroy()
+                else:
+                    messagebox.showwarning(title="Invalid Input", 
+                                         message="Depth must be between 1 and 30")
+            except ValueError:
+                messagebox.showwarning(title="Invalid Input", 
+                                     message="Please enter a valid number")
+        
+        ttk.Button(frame, text="Apply", command=apply).pack(side=tk.LEFT, padx=5)
+
+    def update_engines_menu(self):
+        """Update the engines menu with available engines."""
+        # Clear existing engine entries after the separator
+        last_index = self.engines_menu.index(tk.END)
+        if last_index >= 2:  # Keep first three items (Select, Depth, separator)
+            for i in range(last_index, 2, -1):
+                self.engines_menu.delete(i)
+        
+        # Find all engine executables recursively
+        engines_dir = os.path.join('res', 'engines')
+        if not os.path.exists(engines_dir):
+            os.makedirs(engines_dir)  # Create the directory if it doesn't exist
+            return
+        
+        engine_paths = []
+        for root, _, files in os.walk(engines_dir):
+            for file in files:
+                if file.endswith('.exe'):
+                    full_path = os.path.join(root, file)
+                    engine_paths.append(full_path)
+        
+        # Add each engine to the menu
+        for engine_path in sorted(engine_paths):
+            display_name = os.path.basename(engine_path)
+            self.engines_menu.add_radiobutton(
+                label=display_name,
+                command=lambda p=engine_path: self.select_specific_engine(p),
+                variable=self.selected_engine,
+                value=engine_path
+            )
+
+    def select_specific_engine(self, engine_path):
+        """Select a specific engine from the menu."""
+        try:
+            # Stop current engine if running
+            if self.engine:
+                self.analyzing = False
+                self.engine.quit()
+                self.engine = None
+            
+            self.engine_path = engine_path
+            self.initialize_engine()
+            
+            # Update menu selection
+            self.selected_engine.set(engine_path)
+            
+        except Exception as e:
+            messagebox.showerror(
+                title="Engine Error", 
+                message=f"Failed to load engine: {str(e)}"
+            )
+
+    def select_engine(self):
+        """Open file dialog to select an engine."""
+        engine_path = filedialog.askopenfilename(
+            title="Select Chess Engine",
+            initialdir=os.path.join('res', 'engines'),
+            filetypes=[
+                ("Executable files", "*.exe"),
+                ("All files", "*.*")
+            ]
+        )
+        
+        if engine_path:
+            self.select_specific_engine(engine_path)
+
+    def open_most_recent_pgn(self):
+        """Open the most recent PGN file from the /in directory."""
+        in_dir = os.path.join('in')
+        if not os.path.exists(in_dir):
+            os.makedirs(in_dir)
+            return
+        
+        # Find all PGN files in the directory
+        pgn_files = []
+        for file in os.listdir(in_dir):
+            if file.endswith('.pgn'):
+                full_path = os.path.join(in_dir, file)
+                pgn_files.append((full_path, os.path.getmtime(full_path)))
+        
+        # Sort by modification time and get the most recent
+        if pgn_files:
+            most_recent = sorted(pgn_files, key=lambda x: x[1], reverse=True)[0][0]
+            self.open_pgn(most_recent)
+
+    def find_default_engine(self):
+        """Find and load the default engine (Stockfish preferred)."""
+        engines_dir = os.path.join('res', 'engines')
+        if not os.path.exists(engines_dir):
+            os.makedirs(engines_dir)
+            return
+        
+        engine_paths = []
+        # First, look for Stockfish
+        for root, _, files in os.walk(engines_dir):
+            for file in files:
+                if file.lower().startswith('stockfish') and file.endswith('.exe'):
+                    self.select_specific_engine(os.path.join(root, file))
+                    return
+                if file.endswith('.exe'):
+                    engine_paths.append(os.path.join(root, file))
+        
+        # If Stockfish not found, use most recent engine
+        if engine_paths:
+            most_recent = max(engine_paths, key=os.path.getmtime)
+            self.select_specific_engine(most_recent)
+
+    def on_closing(self):
+        """Clean up resources and quit."""
+        try:
+            if self.engine:
+                self.analyzing = False
+                self.engine.quit()
+                self.engine = None
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+        finally:
+            self.root.quit()
+            self.root.destroy()
+
 if __name__ == "__main__":
     root = tk.Tk()
     app = ChessViewer(root)
-    root.mainloop()
+    try:
+        root.mainloop()
+    finally:
+        # Ensure cleanup happens even on keyboard interrupt
+        if app.engine:
+            app.engine.quit()
+        root.quit()
+        root.destroy()

@@ -6,7 +6,7 @@ def main():
     root = tk.Tk()
     print("Created root window")
     
-    root.geometry("1400x1000")  # Set initial window size
+    root.geometry("1600x1000")  # Set initial window size
     root.title("Chess Viewer")  # Set window title
     
     print("Creating ChessViewer instance...")
