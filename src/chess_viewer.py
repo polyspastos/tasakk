@@ -905,6 +905,7 @@ class ChessViewer(tk.Frame):
                 return
                 
             # Get moves based on game type
+            moves = []
             if isinstance(self.current_game, tuple):
                 # Database game
                 pgn_str = self.current_game[11]  # pgn column
@@ -912,54 +913,81 @@ class ChessViewer(tk.Frame):
                     game = chess.pgn.read_game(io.StringIO(pgn_str))
                     if game:
                         moves = list(game.mainline_moves())
-                    else:
-                        moves = []
             else:
                 # PGN game
                 moves = list(self.current_game.mainline_moves())
             
             # Format and display moves
             board = chess.Board()
-            move_pairs = []
-            current_pair = []
-            
             for i, move in enumerate(moves):
+                # Add move number for white's moves
+                if i % 2 == 0:
+                    move_num = f"{i//2 + 1}. "
+                    self.moves_text.insert(tk.END, move_num)
+                
+                # Format the move
                 san = board.san(move)
                 if i == self.current_move_index - 1:
-                    san = f"[{san}]"  # Highlight current move
+                    san = f"[{san}]"
                 
-                current_pair.append(san)
+                # Insert move with tag and spacing
+                move_start = self.moves_text.index("end-1c")
+                self.moves_text.insert(tk.END, san)
+                move_end = self.moves_text.index("end-1c")
+                self.moves_text.tag_add("move", move_start, move_end)
+                self.moves_text.insert(tk.END, " ")
+                
+                # Store move index in tag
+                tag_name = f"move_{i}"
+                self.moves_text.tag_add(tag_name, move_start, move_end)
+                self.moves_text.tag_bind(tag_name, "<Button-1>", 
+                    lambda e, idx=i: self.goto_move(idx + 1))
+                
                 board.push(move)
                 
-                if len(current_pair) == 2:
-                    move_num = i // 2 + 1
-                    move_pairs.append(f"{move_num}. {current_pair[0]} {current_pair[1]}")
-                    current_pair = []
-                elif i == len(moves) - 1 and current_pair:  # Last move if odd
-                    move_num = i // 2 + 1
-                    move_pairs.append(f"{move_num}. {current_pair[0]}")
-            
-            self.moves_text.insert('1.0', "  ".join(move_pairs))
-            
         except Exception as e:
             logger.error(f"Error updating moves display: {e}")
 
-    def on_move_click(self, event):
-        """Handle click on a move in the moves display."""
+    def goto_move(self, move_index):
+        """Go to specific move number."""
+        try:
+            if move_index < 0:
+                move_index = 0
+            
+            # Get total moves based on game type
+            total_moves = 0
+            if isinstance(self.current_game, tuple):
+                pgn_str = self.current_game[11]
+                if pgn_str:
+                    game = chess.pgn.read_game(io.StringIO(pgn_str))
+                    if game:
+                        total_moves = len(list(game.mainline_moves()))
+            else:
+                total_moves = len(list(self.current_game.mainline_moves()))
+            
+            if move_index > total_moves:
+                move_index = total_moves
+                
+            self.current_move_index = move_index
+            self.update_pieces()
+            self.update_moves_display()
+            
+        except Exception as e:
+            logger.error(f"Error going to move: {e}")
+
+    def move_clicked(self, event):
+        """Handle click on a move."""
         try:
             # Get click position
-            click_index = self.moves_text.index(f"@{event.x},{event.y}")
+            index = self.moves_text.index(f"@{event.x},{event.y}")
             
-            # Find which move was clicked
-            for pos, move_index in self.move_positions.items():
-                start, end = pos.split(":")
-                if self.moves_text.compare(start, "<=", click_index) and \
-                   self.moves_text.compare(click_index, "<=", end):
-                    # Update position to this move
-                    self.current_move_index = move_index + 1  # Add 1 because move_index is 0-based
-                    self.update_pieces()
+            # Find which move tag was clicked
+            for tag in self.moves_text.tag_names(index):
+                if tag.startswith("move_"):
+                    move_num = int(tag.split("_")[1])
+                    self.goto_move(move_num + 1)
                     break
-                    
+                
         except Exception as e:
             logger.error(f"Error handling move click: {e}")
 
@@ -1032,14 +1060,28 @@ class ChessViewer(tk.Frame):
         try:
             # Get current position
             board = chess.Board()
-            if isinstance(self.current_game, dict):
+            
+            # Handle different game types
+            if isinstance(self.current_game, tuple):
+                # Database game
+                pgn_str = self.current_game[11]  # pgn column
+                if pgn_str:
+                    game = chess.pgn.read_game(io.StringIO(pgn_str))
+                    if game:
+                        moves = list(game.mainline_moves())
+                        for move in moves[:self.current_move_index]:
+                            board.push(move)
+            elif isinstance(self.current_game, dict):
+                # Dictionary-based game
                 game = chess.pgn.read_game(io.StringIO(self.current_game.get('pgn', '')))
+                if game:
+                    moves = list(game.mainline_moves())
+                    for move in moves[:self.current_move_index]:
+                        board.push(move)
             else:
-                game = self.current_game
-                
-            if game:
-                moves = list(game.mainline_moves())[:self.current_move_index]
-                for move in moves:
+                # PGN game - keep original logic
+                moves = list(self.current_game.mainline_moves())
+                for move in moves[:self.current_move_index]:
                     board.push(move)
             
             # Clear previous analysis
@@ -1054,7 +1096,7 @@ class ChessViewer(tk.Frame):
             
             # Display each line of analysis
             for i, line in enumerate(info):
-                score = line['score']  # Get the score directly
+                score = line['score']
                 pv = line.get('pv', [])
                 
                 # Format the score
@@ -1267,33 +1309,66 @@ class ChessViewer(tk.Frame):
         # Initialize move positions dictionary
         self.move_positions = {}
 
-    def prev_ply(self, event=None):
-        """Go to the previous ply (half-move) in the current game."""
-        if not hasattr(self, 'moves') or not self.moves:
-            return
-        
-        if self.current_move_index > 0:
-            self.board.pop()
-            self.current_move_index -= 1
-            self.update_pieces()
-            if self.analyzing:
-                self.analyze_position()
-        # Always prevent event from propagating
-        return "break"
-
     def next_ply(self, event=None):
-        """Go to the next ply (half-move) in the current game."""
-        if not hasattr(self, 'moves') or not self.moves:
-            return
-        
-        if self.current_move_index < len(self.moves):
-            self.board.push(self.moves[self.current_move_index])
-            self.current_move_index += 1
+        """Move forward one ply."""
+        try:
+            if not self.current_game:
+                return
+                
+            # Get moves based on game type
+            moves = []
+            if isinstance(self.current_game, tuple):
+                pgn_str = self.current_game[11]  # pgn column
+                if pgn_str:
+                    game = chess.pgn.read_game(io.StringIO(pgn_str))
+                    if game:
+                        moves = list(game.mainline_moves())
+            else:
+                # PGN game
+                moves = list(self.current_game.mainline_moves())
+                
+            # Check if we can move forward
+            if self.current_move_index < len(moves):
+                # Reset board and replay moves up to new position
+                self.board = chess.Board()
+                for i in range(self.current_move_index + 1):
+                    self.board.push(moves[i])
+                    
+                self.current_move_index += 1
+                self.update_pieces()
+                self.update_moves_display()
+                
+        except Exception as e:
+            logger.error(f"Error in next_ply: {e}")
+
+    def prev_ply(self, event=None):
+        """Move backward one ply."""
+        try:
+            if not self.current_game or self.current_move_index <= 0:
+                return
+                
+            # Get moves based on game type
+            moves = []
+            if isinstance(self.current_game, tuple):
+                pgn_str = self.current_game[11]
+                if pgn_str:
+                    game = chess.pgn.read_game(io.StringIO(pgn_str))
+                    if game:
+                        moves = list(game.mainline_moves())
+            else:
+                moves = list(self.current_game.mainline_moves())
+                
+            # Reset board and replay moves up to new position
+            self.board = chess.Board()
+            self.current_move_index -= 1
+            for i in range(self.current_move_index):
+                self.board.push(moves[i])
+                
             self.update_pieces()
-            if self.analyzing:
-                self.analyze_position()
-        # Always prevent event from propagating
-        return "break"
+            self.update_moves_display()
+            
+        except Exception as e:
+            logger.error(f"Error in prev_ply: {e}")
 
     def set_engine_depth(self):
         """Open dialog to set engine analysis depth."""
