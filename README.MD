@@ -51,6 +51,9 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+4. Install imagemagick separately if need be:
+https://imagemagick.org/script/download.php
+
 4. Run the application:
 ```bash
 python run.py
